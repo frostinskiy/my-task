@@ -28,12 +28,6 @@
             border-bottom: 1px solid #f1f5f9;
         }
 
-        .task-item:hover {
-            transform: translateY(-2px);
-            background: white;
-            box-shadow: 0 10px 20px -5px rgba(0, 0, 0, 0.03);
-        }
-
         .checkbox-custom {
             width: 28px;
             height: 28px;
@@ -65,10 +59,8 @@
             font-size: 10px;
             font-weight: 800;
             text-transform: uppercase;
-            box-shadow: 0 4px 10px rgba(245, 158, 11, 0.3);
         }
 
-        /* Анимированный градиент для админа */
         .admin-glow {
             background: linear-gradient(90deg, #6366f1, #a855f7, #6366f1);
             background-size: 200% auto;
@@ -81,270 +73,265 @@
             to { background-position: 200% center; }
         }
 
-        .level-up-toast {
-            animation: slideUp 0.5s ease-out;
-        }
-
-        @keyframes slideUp {
-            from { transform: translateY(100%); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
+        .copy-toast {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #1e293b;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 16px;
+            font-size: 14px;
+            font-weight: 600;
+            display: none;
+            z-index: 100;
         }
     </style>
 </head>
 <body class="min-h-screen pb-24">
 
+    <div id="copy-status" class="copy-toast">Ссылка скопирована! 🚀</div>
+
     <div class="app-container max-w-xl mx-auto py-8 px-5">
-        <!-- Верхушка: Профиль и Статус -->
-        <header class="flex justify-between items-start mb-10">
+        <header class="flex justify-between items-start mb-6">
             <div>
                 <div class="flex items-center gap-2">
-                    <h1 id="app-title" class="text-3xl font-extrabold text-slate-900 tracking-tight">Мой День</h1>
+                    <h1 id="app-title" class="text-3xl font-extrabold text-slate-900 tracking-tight text-nowrap">Мой День</h1>
                     <span id="admin-indicator" class="hidden rank-badge !from-indigo-600 !to-purple-600">Admin</span>
                 </div>
                 <div class="flex items-center gap-3 mt-2">
-                    <div class="rank-badge" id="user-rank">Новичок</div>
-                    <p id="user-info" class="text-slate-400 text-[11px] font-bold uppercase tracking-widest">Загрузка...</p>
+                    <div class="rank-badge" id="user-rank">Загрузка...</div>
+                    <p id="user-info" class="text-slate-400 text-[11px] font-bold uppercase tracking-widest">CONNECTING</p>
                 </div>
             </div>
-            <div class="relative group">
+            <div class="flex gap-2">
+                <button id="share-btn" onclick="copyAppLink()" class="hidden w-12 h-12 glass-card flex items-center justify-center text-xl hover:scale-110 transition active:scale-95 border-blue-200">
+                    🔗
+                </button>
                 <button onclick="askAdmin()" class="w-12 h-12 glass-card flex items-center justify-center text-xl hover:scale-110 transition active:scale-95">
                     👑
                 </button>
             </div>
         </header>
 
-        <!-- Статистика прогресса -->
+        <!-- Диагностика ошибок (скрыта по умолчанию) -->
+        <div id="error-box" class="hidden mb-6 p-5 glass-card bg-red-50 border-red-200">
+            <h3 class="text-red-600 font-bold mb-1">Ошибка подключения</h3>
+            <p id="error-msg" class="text-sm text-red-500">Не удалось связаться с базой данных. Попробуйте обновить страницу или отключить AdBlock.</p>
+        </div>
+
+        <div id="admin-tools" class="hidden mb-6 p-4 glass-card bg-indigo-50/50 border-indigo-100">
+            <p class="text-[10px] font-bold text-indigo-400 uppercase tracking-widest mb-1">Панель управления</p>
+            <p class="text-xs text-indigo-600 font-medium italic">Вы видите всё. Нажмите 🔗 для копирования ссылки.</p>
+        </div>
+
         <div class="mb-8">
             <div class="flex justify-between text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-2">
                 <span>Прогресс уровня</span>
-                <span id="exp-text">0 / 5</span>
+                <span id="exp-text">...</span>
             </div>
             <div class="w-full h-3 bg-slate-200 rounded-full overflow-hidden">
                 <div id="exp-bar" class="h-full bg-gradient-to-r from-blue-500 to-indigo-600 transition-all duration-1000" style="width: 0%"></div>
             </div>
         </div>
 
-        <!-- Поле ввода с характером -->
-        <div class="glass-card p-2 mb-8 group focus-within:ring-4 ring-blue-100 transition-all">
+        <div class="glass-card p-2 mb-8">
             <div class="flex flex-col">
-                <input type="text" id="task-input" placeholder="Каков план на сегодня?" 
-                       class="w-full px-6 py-4 text-lg font-semibold outline-none bg-transparent placeholder:text-slate-300">
-                
+                <input type="text" id="task-input" placeholder="Что планируем?" 
+                       class="w-full px-6 py-4 text-lg font-semibold outline-none bg-transparent">
                 <div class="flex items-center justify-between p-3 bg-slate-50/50 rounded-2xl">
                     <div class="flex gap-2">
-                        <input type="time" id="task-time" class="bg-white px-3 py-2 rounded-xl text-sm font-bold text-slate-600 outline-none shadow-sm">
-                        <select id="task-priority" class="bg-white px-3 py-2 rounded-xl text-sm font-bold text-slate-600 outline-none shadow-sm cursor-pointer">
+                        <input type="time" id="task-time" class="bg-white px-3 py-2 rounded-xl text-sm font-bold shadow-sm">
+                        <select id="task-priority" class="bg-white px-3 py-2 rounded-xl text-sm font-bold shadow-sm">
                             <option value="high">🚀 Срочно</option>
                             <option value="medium" selected>⚡️ Обычно</option>
                             <option value="low">☁️ Мелочь</option>
                         </select>
                     </div>
-                    <button onclick="addTask()" id="add-btn" class="bg-slate-900 text-white w-12 h-12 rounded-xl flex items-center justify-center hover:bg-black transition-all active:scale-90 shadow-lg shadow-slate-200">
+                    <button onclick="addTask()" class="bg-slate-900 text-white w-12 h-12 rounded-xl flex items-center justify-center shadow-lg">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
                     </button>
                 </div>
             </div>
         </div>
 
-        <!-- Список -->
         <div id="task-container" class="glass-card overflow-hidden min-h-[120px]">
-            <div class="p-16 text-center">
+            <div id="loading-spinner" class="p-16 text-center">
                 <div class="animate-spin inline-block w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full mb-4"></div>
-                <p class="text-slate-400 font-bold uppercase text-[10px] tracking-widest">Проверка задач...</p>
+                <p class="text-slate-400 font-bold uppercase text-[10px] tracking-widest">Проверка синхронизации...</p>
             </div>
         </div>
     </div>
 
-    <!-- Звуки -->
-    <audio id="sound-pop" src="https://assets.mixkit.co/active_storage/sfx/2571/2571-preview.mp3"></audio>
-    <audio id="sound-success" src="https://assets.mixkit.co/active_storage/sfx/1435/1435-preview.mp3"></audio>
-
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, doc, updateDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
-        let currentUser = null;
-        let isAdmin = false;
-        let unsubscribe = null;
-
-        const sounds = {
-            pop: document.getElementById('sound-pop'),
-            success: document.getElementById('sound-success')
-        };
-
-        const speak = (text) => {
-            const msg = new SpeechSynthesisUtterance(text);
-            msg.lang = 'ru-RU';
-            msg.rate = 1.1;
-            window.speechSynthesis.speak(msg);
-        };
-
-        // Авторизация
-        const initAuth = async () => {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-                await signInAnonymously(auth);
+        // Таймер для диагностики бесконечной загрузки
+        const loadTimer = setTimeout(() => {
+            const spinner = document.getElementById('loading-spinner');
+            if (spinner) {
+                document.getElementById('error-box').classList.remove('hidden');
+                document.getElementById('error-msg').innerText = "Загрузка идет дольше обычного. Проверьте интернет или попробуйте открыть сайт в режиме инкогнито.";
             }
-        };
+        }, 8000);
 
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                currentUser = user;
-                document.getElementById('user-info').innerText = `ID: ${user.uid.substring(0,6)}`;
-                subscribeToTasks();
-            }
-        });
+        try {
+            const firebaseConfig = JSON.parse(__firebase_config);
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
-        initAuth();
+            let currentUser = null;
+            let isAdmin = false;
+            let unsubscribe = null;
 
-        window.askAdmin = () => {
-            const pass = prompt("Секретный код доступа:");
-            if (pass === "777") {
-                isAdmin = true;
-                document.getElementById('admin-indicator').classList.remove('hidden');
-                document.getElementById('app-title').classList.add('admin-glow');
-                document.getElementById('app-title').innerText = "Контроль Системы";
-                subscribeToTasks();
-                speak("Добро пожаловать, создатель.");
-            }
-        };
+            const initAuth = async () => {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                } catch (e) {
+                    console.error("Auth Error:", e);
+                    document.getElementById('error-box').classList.remove('hidden');
+                    document.getElementById('error-msg').innerText = "Ошибка авторизации: " + e.message;
+                }
+            };
 
-        const tasksCollection = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    currentUser = user;
+                    document.getElementById('user-info').innerText = `ID: ${user.uid.substring(0,6)}`;
+                    subscribeToTasks();
+                }
+            });
 
-        window.addTask = async () => {
-            const input = document.getElementById('task-input');
-            const time = document.getElementById('task-time').value;
-            const priority = document.getElementById('task-priority').value;
+            initAuth();
 
-            if (!input.value.trim() || !currentUser) return;
+            window.askAdmin = () => {
+                const pass = prompt("Код доступа:");
+                if (pass === "777") {
+                    isAdmin = true;
+                    document.getElementById('admin-indicator').classList.remove('hidden');
+                    document.getElementById('admin-tools').classList.remove('hidden');
+                    document.getElementById('share-btn').classList.remove('hidden');
+                    document.getElementById('app-title').classList.add('admin-glow');
+                    subscribeToTasks();
+                }
+            };
 
-            try {
+            window.copyAppLink = () => {
+                const url = window.location.href;
+                navigator.clipboard.writeText(url).then(() => {
+                    const toast = document.getElementById('copy-status');
+                    toast.style.display = 'block';
+                    setTimeout(() => { toast.style.display = 'none'; }, 2000);
+                }).catch(() => {
+                    // Fallback для старых браузеров
+                    const el = document.createElement('textarea');
+                    el.value = url;
+                    document.body.appendChild(el);
+                    el.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(el);
+                });
+            };
+
+            const tasksCollection = collection(db, 'artifacts', appId, 'public', 'data', 'tasks');
+
+            window.addTask = async () => {
+                const input = document.getElementById('task-input');
+                if (!input.value.trim() || !currentUser) return;
                 await addDoc(tasksCollection, {
                     text: input.value,
-                    time: time || null,
-                    priority: priority,
+                    time: document.getElementById('task-time').value || null,
+                    priority: document.getElementById('task-priority').value,
                     completed: false,
                     userId: currentUser.uid,
                     createdAt: serverTimestamp(),
                     likes: 0
                 });
-                sounds.pop.play();
                 input.value = '';
-            } catch (e) { console.error(e); }
-        };
+            };
 
-        window.toggleTask = async (id, currentStatus) => {
-            if (!currentStatus) sounds.success.play();
-            const taskDoc = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
-            await updateDoc(taskDoc, { completed: !currentStatus });
-        };
+            window.toggleTask = async (id, status) => {
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id), { completed: !status });
+            };
 
-        window.deleteTask = async (id) => {
-            const taskDoc = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
-            await deleteDoc(taskDoc);
-        };
+            window.deleteTask = async (id) => {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id));
+            };
 
-        window.likeTask = async (id, currentLikes) => {
-            const taskDoc = doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id);
-            await updateDoc(taskDoc, { likes: (currentLikes || 0) + 1 });
-        };
+            window.likeTask = async (id, current) => {
+                await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'tasks', id), { likes: (current || 0) + 1 });
+            };
 
-        function subscribeToTasks() {
-            if (unsubscribe) unsubscribe();
-            unsubscribe = onSnapshot(tasksCollection, (snapshot) => {
-                let tasks = [];
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    if (isAdmin || data.userId === currentUser.uid) {
-                        tasks.push({ id: doc.id, ...data });
-                    }
+            function subscribeToTasks() {
+                if (unsubscribe) unsubscribe();
+                unsubscribe = onSnapshot(tasksCollection, (snapshot) => {
+                    clearTimeout(loadTimer); // Останавливаем таймер ошибки, данные пришли
+                    document.getElementById('error-box').classList.add('hidden');
+                    
+                    let tasks = [];
+                    snapshot.forEach(doc => {
+                        const data = doc.data();
+                        if (isAdmin || data.userId === currentUser.uid) {
+                            tasks.push({ id: doc.id, ...data });
+                        }
+                    });
+                    tasks.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+                    render(tasks);
+                }, (error) => {
+                    console.error("Firestore Error:", error);
+                    document.getElementById('error-box').classList.remove('hidden');
+                    document.getElementById('error-msg').innerText = "Нет доступа к базе. Проверьте настройки GitHub или обратитесь к создателю.";
                 });
-                tasks.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-                render(tasks);
-            });
-        }
-
-        function getRank(count) {
-            if (count >= 50) return "Легенда";
-            if (count >= 20) return "Мастер";
-            if (count >= 10) return "Продвинутый";
-            if (count >= 5) return "Боец";
-            return "Новичок";
-        }
-
-        function render(tasks) {
-            const container = document.getElementById('task-container');
-            container.innerHTML = '';
-
-            const myCompleted = tasks.filter(t => t.completed && t.userId === currentUser.uid).length;
-            
-            // Обновление прогресса
-            const rank = getRank(myCompleted);
-            const nextLevelGoal = myCompleted < 5 ? 5 : myCompleted < 10 ? 10 : myCompleted < 20 ? 20 : 50;
-            document.getElementById('user-rank').innerText = rank;
-            document.getElementById('exp-text').innerText = `${myCompleted} / ${nextLevelGoal}`;
-            document.getElementById('exp-bar').style.width = `${Math.min((myCompleted / nextLevelGoal) * 100, 100)}%`;
-
-            if (tasks.length === 0) {
-                container.innerHTML = `
-                    <div class="p-16 text-center">
-                        <p class="text-slate-300 font-bold uppercase text-[10px] tracking-widest leading-loose">
-                            Планов нет.<br>Время что-то создать.
-                        </p>
-                    </div>`;
-                return;
             }
 
-            tasks.forEach(task => {
-                const div = document.createElement('div');
-                div.className = 'task-item p-6 flex items-center gap-5';
+            function render(tasks) {
+                const container = document.getElementById('task-container');
+                container.innerHTML = '';
+                const myDone = tasks.filter(t => t.completed && t.userId === currentUser.uid).length;
+                const nextGoal = myDone < 5 ? 5 : myDone < 10 ? 10 : myDone < 20 ? 20 : 50;
                 
-                const priorityStyles = {
-                    high: 'border-l-4 border-red-500',
-                    medium: 'border-l-4 border-blue-500',
-                    low: 'border-l-4 border-slate-200'
-                };
+                document.getElementById('user-rank').innerText = myDone >= 50 ? "Легенда" : myDone >= 20 ? "Мастер" : "Новичок";
+                document.getElementById('exp-text').innerText = `${myDone} / ${nextGoal}`;
+                document.getElementById('exp-bar').style.width = `${Math.min((myDone / nextGoal) * 100, 100)}%`;
 
-                div.className += ` ${priorityStyles[task.priority]}`;
+                if (tasks.length === 0) {
+                    container.innerHTML = '<div class="p-16 text-center text-slate-300 font-bold uppercase text-[10px] tracking-widest">Список пуст</div>';
+                    return;
+                }
 
-                div.innerHTML = `
-                    <div onclick="toggleTask('${task.id}', ${task.completed})" class="checkbox-custom ${task.completed ? 'checked' : ''}">
-                        ${task.completed ? '<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>' : ''}
-                    </div>
-                    
-                    <div class="flex-grow">
-                        <p class="font-bold text-[17px] tracking-tight ${task.completed ? 'task-text-done' : 'text-slate-800'}">
-                            ${task.text}
-                        </p>
-                        <div class="flex items-center gap-3 mt-1.5">
-                            <span class="text-[9px] font-black text-slate-400 uppercase tracking-widest">
-                                ${isAdmin ? `USER_${task.userId.substring(0,4)}` : 'ЛИЧНОЕ'}
-                            </span>
-                            ${task.time ? `<span class="text-[10px] font-black text-blue-600 bg-blue-50 px-2 py-0.5 rounded-lg border border-blue-100">${task.time}</span>` : ''}
+                tasks.forEach(task => {
+                    const div = document.createElement('div');
+                    div.className = `task-item p-6 flex items-center gap-5 border-l-4 ${task.priority === 'high' ? 'border-red-500' : 'border-blue-500'}`;
+                    div.innerHTML = `
+                        <div onclick="toggleTask('${task.id}', ${task.completed})" class="checkbox-custom ${task.completed ? 'checked' : ''}">
+                            ${task.completed ? '<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>' : ''}
                         </div>
-                    </div>
-
-                    <div class="flex items-center gap-3">
-                        <button onclick="likeTask('${task.id}', ${task.likes})" class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-orange-50 rounded-2xl transition-all active:scale-90 group">
-                            <span class="text-sm group-hover:animate-bounce">🔥</span>
-                            <span class="text-xs font-bold text-slate-500">${task.likes || 0}</span>
-                        </button>
-                        
-                        <button onclick="deleteTask('${task.id}')" class="text-slate-200 hover:text-red-500 transition-colors p-1">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                        </button>
-                    </div>
-                `;
-                container.appendChild(div);
-            });
+                        <div class="flex-grow">
+                            <p class="font-bold ${task.completed ? 'task-text-done' : ''}">${task.text}</p>
+                            <span class="text-[9px] font-black text-slate-400 uppercase">${isAdmin ? `ID: ${task.userId.substring(0,4)}` : 'МОЁ'}</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="likeTask('${task.id}', ${task.likes})" class="px-3 py-1 bg-slate-50 rounded-xl">🔥 ${task.likes || 0}</button>
+                            <button onclick="deleteTask('${task.id}')" class="text-slate-200 hover:text-red-500">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke-width="2"/></svg>
+                            </button>
+                        </div>
+                    `;
+                    container.appendChild(div);
+                });
+            }
+        } catch (e) {
+            document.getElementById('error-box').classList.remove('hidden');
+            document.getElementById('error-msg').innerText = "Критическая ошибка: " + e.message;
         }
     </script>
 </body>
