@@ -8,53 +8,36 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
         // --- КОНФИГУРАЦИЯ ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyDFPgvkN6yAxcJqbUak-bh5akmL5oiPSCs",
+            authDomain: "planner21-47147.firebaseapp.com",
+            projectId: "planner21-47147",
+            storageBucket: "planner21-47147.firebasestorage.app",
+            messagingSenderId: "678376272314",
+            appId: "1:678376272314:web:4519c23ede2462f6d7ad83",
+            measurementId: "G-2RRNNW5YZY"
+        };
+
         const MY_ADMIN_ID = 492384348;
         const TELEGRAM_TOKEN = '8475177436:AAGqptajS1HqA1Xw-ZINU7EGXIutoAy1igU';
-        
+        const appId = 'planner21-prod';
+
         const tg = window.Telegram.WebApp;
         tg.expand();
         tg.ready();
 
-        // 1. Пытаемся получить конфиг. Если его нет - создаем пустой объект для проверки
-        let firebaseConfig = null;
-        try {
-            if (typeof __firebase_config !== 'undefined') {
-                firebaseConfig = JSON.parse(__firebase_config);
-            }
-        } catch(e) {}
-
-        // --- ЕСЛИ ТЫ НА СВОЕМ САЙТЕ, ВСТАВЬ ДАННЫЕ СЮДА ---
-        if (!firebaseConfig || !firebaseConfig.apiKey) {
-            firebaseConfig = {
-                apiKey: "ВАШ_API_KEY",
-                authDomain: "ВАШ_PROJECT.firebaseapp.com",
-                projectId: "ВАШ_PROJECT_ID",
-                storageBucket: "ВАШ_PROJECT.appspot.com",
-                messagingSenderId: "ВАШ_SENDER_ID",
-                appId: "ВАШ_APP_ID"
-            };
-        }
-
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'planner21';
         let db, auth;
-        let user = tg.initDataUnsafe.user || { first_name: "User", id: 492384348 };
+        let user = tg.initDataUnsafe.user || { first_name: "Admin", id: 492384348 };
         let tasks = [];
         let isAdminMode = false;
+        let remindedTasks = new Set();
 
         async function init() {
             const userNameEl = document.getElementById('user-name');
-            
-            // Если ключи не заменены
-            if (firebaseConfig.apiKey === "ВАШ_API_KEY") {
-                userNameEl.innerText = "ОШИБКА КОНФИГА";
-                userNameEl.classList.add('text-red-500');
-                return;
-            }
-
             try {
                 const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
@@ -65,14 +48,22 @@
                         userNameEl.innerText = user.first_name;
                         startListening();
                         checkAdminStatus();
+                        startReminderEngine();
                     } else {
-                        signInAnonymously(auth).catch(e => {
-                            userNameEl.innerText = "ОШИБКА СЕТИ";
-                        });
+                        try {
+                            await signInAnonymously(auth);
+                        } catch (authErr) {
+                            console.error("Auth Error:", authErr);
+                            tg.showPopup({ 
+                                title: "Ошибка авторизации", 
+                                message: "Включите 'Anonymous' в Firebase Console -> Authentication -> Sign-in method" 
+                            });
+                        }
                     }
                 });
             } catch (err) {
-                userNameEl.innerText = "ОШИБКА ИНИЦ.";
+                userNameEl.innerText = "ОШИБКА БАЗЫ";
+                console.error(err);
             }
         }
 
@@ -81,21 +72,21 @@
                 const badge = document.getElementById('admin-badge');
                 badge.classList.remove('hidden');
                 badge.onclick = toggleAdmin;
+                badge.innerText = "PRO";
             }
         }
 
         function toggleAdmin() {
             isAdminMode = !isAdminMode;
             const badge = document.getElementById('admin-badge');
-            badge.innerText = isAdminMode ? "ADMIN" : "PRO";
+            badge.innerText = isAdminMode ? "ADMIN VIEW" : "MY TASKS";
             badge.classList.toggle('bg-red-500', isAdminMode);
+            badge.classList.toggle('text-white', isAdminMode);
             startListening();
             tg.HapticFeedback.impactOccurred('medium');
         }
 
         function startListening() {
-            // Путь согласно ПРАВИЛУ 1
-            const collectionName = isAdminMode ? 'all_tasks' : 'tasks';
             const path = isAdminMode 
                 ? collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks')
                 : collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
@@ -104,8 +95,40 @@
                 tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 render(tasks);
             }, (err) => {
-                console.error(err);
+                console.error("Firestore error:", err);
+                if (err.code === 'permission-denied') {
+                    tg.showPopup({ title: "Ошибка доступа", message: "Настройте Rules в Firestore (allow read, write: if true;)" });
+                }
             });
+        }
+
+        function startReminderEngine() {
+            setInterval(() => {
+                const now = new Date();
+                const currentStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+                
+                tasks.forEach(task => {
+                    if (!task.done && task.time && task.time <= currentStr && !remindedTasks.has(task.id)) {
+                        sendTelegramNotification(task);
+                        remindedTasks.add(task.id);
+                    }
+                });
+            }, 60000); 
+        }
+
+        async function sendTelegramNotification(task) {
+            const text = `🔔 *Напоминание:* \n\nЗадача "${task.text}" ожидает выполнения. \n🕒 Время: ${task.time}`;
+            try {
+                await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: user.id,
+                        text: text,
+                        parse_mode: 'Markdown'
+                    })
+                });
+            } catch (e) { console.error("Notify error", e); }
         }
 
         window.addTask = async () => {
@@ -128,29 +151,20 @@
             };
 
             try {
-                // Добавляем в личный список
-                const userPath = collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
-                await addDoc(userPath, payload);
-                
-                // Добавляем в общий список (для админа)
-                const publicPath = collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks');
-                await addDoc(publicPath, payload);
+                await addDoc(collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks'), payload);
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks'), payload);
 
                 input.value = '';
                 tg.HapticFeedback.impactOccurred('light');
                 
-                // Уведомление в бот
-                fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        chat_id: user.id,
-                        text: `✅ *Новая задача:* ${text}\n🕒 *Время:* ${time || 'Не указано'}`,
-                        parse_mode: 'Markdown'
-                    })
-                });
+                // Эффект успешного добавления
+                const btn = document.getElementById('add-btn');
+                btn.classList.add('bg-green-500');
+                setTimeout(() => btn.classList.remove('bg-green-500'), 500);
+
             } catch (e) {
-                tg.showPopup({ title: "Ошибка", message: "Не удалось сохранить. Проверьте настройки Firestore." });
+                console.error(e);
+                tg.showPopup({ title: "Ошибка", message: "Не удалось сохранить в БД." });
             }
         };
 
@@ -171,29 +185,29 @@
         function render(listData) {
             const container = document.getElementById('task-list');
             container.innerHTML = '';
-            
-            const done = listData.filter(t => t.done).length;
-            const prog = listData.length > 0 ? (done / listData.length) * 100 : 0;
+            const doneCount = listData.filter(t => t.done).length;
+            const total = listData.length;
+            const prog = total > 0 ? (doneCount / total) * 100 : 0;
             
             document.getElementById('progress-bar').style.width = prog + '%';
-            document.getElementById('progress-text').innerText = `${done} / ${listData.length}`;
+            document.getElementById('progress-text').innerText = `${doneCount} / ${total}`;
 
             listData.sort((a,b) => b.createdAt - a.createdAt).forEach(t => {
                 const el = document.createElement('div');
-                el.className = 'bg-white rounded-2xl p-4 flex items-center gap-4 mb-3 shadow-sm border border-slate-50 transition-all';
+                el.className = 'bg-white rounded-2xl p-4 flex items-center gap-4 mb-3 shadow-sm border border-slate-50 transition-all active:scale-[0.98]';
                 el.innerHTML = `
-                    <div onclick="toggleTask('${t.id}', ${t.done})" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${t.done ? 'bg-slate-900 border-slate-900' : 'border-slate-200'}">
+                    <div onclick="toggleTask('${t.id}', ${t.done})" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${t.done ? 'bg-indigo-600 border-indigo-600' : 'border-slate-200'}">
                         ${t.done ? '<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>' : ''}
                     </div>
                     <div class="flex-grow overflow-hidden" onclick="toggleTask('${t.id}', ${t.done})">
                         <p class="text-sm font-bold truncate ${t.done ? 'line-through text-slate-300' : 'text-slate-800'}">${t.text}</p>
                         <div class="flex gap-2 mt-1 items-center">
                             <span class="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">${isAdminMode ? t.userName : t.priority}</span>
-                            ${t.time ? `<span class="text-[9px] text-slate-400 font-bold flex items-center gap-1">🕒 ${t.time}</span>` : ''}
+                            ${t.time ? `<span class="text-[9px] text-indigo-500 font-bold flex items-center gap-1">🕒 ${t.time}</span>` : ''}
                         </div>
                     </div>
                     ${!isAdminMode ? `
-                        <button onclick="deleteTask('${t.id}')" class="text-slate-200 hover:text-red-500 transition-colors">
+                        <button onclick="deleteTask('${t.id}')" class="text-slate-200 hover:text-red-500">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
                     ` : ''}
@@ -205,51 +219,51 @@
         init();
     </script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;700;800&display=swap');
-        body { background: #f8fafc; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
-        .custom-shadow { box-shadow: 0 10px 30px -10px rgba(0,0,0,0.05); }
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
+        body { background: #fcfdfe; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
     </style>
 </head>
 <body class="p-5 pb-24">
     <header class="flex items-center justify-between mb-8">
         <div class="flex items-center gap-3">
-            <div class="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center text-white shadow-xl rotate-3">
+            <div class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-200 rotate-2">
                 <span class="text-xs font-black italic">P21</span>
             </div>
             <div>
-                <h1 class="text-xl font-black text-slate-900 leading-none tracking-tight">PLANNER 21</h1>
-                <p id="user-name" class="text-[10px] text-blue-600 font-bold uppercase mt-1 tracking-widest">Connect...</p>
+                <h1 class="text-xl font-extrabold text-slate-900 tracking-tight leading-none">PLANNER 21</h1>
+                <p id="user-name" class="text-[10px] text-indigo-500 font-bold uppercase tracking-widest mt-1">Подключение...</p>
             </div>
         </div>
-        <div id="admin-badge" class="hidden px-4 py-2 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase cursor-pointer active:scale-95 transition-transform">Pro</div>
+        <button id="admin-badge" class="hidden px-4 py-2 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase transition-all active:scale-90"></button>
     </header>
 
-    <div class="bg-white rounded-3xl p-5 mb-8 custom-shadow border border-slate-50">
-        <div class="flex justify-between items-end mb-3">
-            <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Твой статус</span>
-            <span id="progress-text" class="text-sm font-black text-slate-800">0 / 0</span>
+    <div class="bg-white rounded-[2.5rem] p-6 mb-8 border border-slate-50 shadow-sm">
+        <div class="flex justify-between items-end mb-4">
+            <span class="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Продуктивность</span>
+            <span id="progress-text" class="text-sm font-black text-slate-900">0 / 0</span>
         </div>
-        <div class="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-            <div id="progress-bar" class="h-full bg-slate-900 transition-all duration-1000" style="width: 0%"></div>
+        <div class="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
+            <div id="progress-bar" class="h-full bg-indigo-600 rounded-full transition-all duration-1000 ease-out" style="width: 0%"></div>
         </div>
     </div>
 
-    <div class="bg-white p-3 rounded-3xl custom-shadow border border-slate-50 mb-8">
-        <div class="flex items-center gap-2 mb-3">
-            <input type="text" id="task-input" placeholder="Новая задача..." class="bg-slate-50 flex-grow px-5 py-4 rounded-2xl outline-none font-bold text-sm text-slate-800">
-            <button onclick="addTask()" class="bg-slate-900 text-white p-4 rounded-2xl shadow-lg active:scale-90 transition-all">
+    <div class="bg-white p-4 rounded-[2.5rem] border border-slate-50 shadow-sm mb-8">
+        <div class="flex items-center gap-2 mb-4">
+            <input type="text" id="task-input" placeholder="Добавить цель..." class="bg-slate-50 flex-grow px-6 py-4 rounded-2xl outline-none font-bold text-sm text-slate-700 placeholder:text-slate-300">
+            <button id="add-btn" onclick="addTask()" class="bg-indigo-600 text-white p-4 rounded-2xl shadow-md shadow-indigo-100 active:scale-90 transition-all">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"></path></svg>
             </button>
         </div>
         <div class="flex gap-3">
             <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center">
-                <input type="time" id="task-time" class="bg-transparent text-xs font-bold outline-none w-full text-slate-600">
+                <span class="text-xs mr-2 opacity-50">🕒</span>
+                <input type="time" id="task-time" class="bg-transparent text-xs font-bold outline-none text-slate-600 w-full">
             </div>
             <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center">
-                <select id="task-priority" class="bg-transparent text-xs font-bold outline-none w-full text-slate-600">
-                    <option value="Высокий">🚀 Высокий</option>
-                    <option value="Обычный" selected>⚡️ Обычный</option>
-                    <option value="Низкий">☁️ Низкий</option>
+                <select id="task-priority" class="bg-transparent text-xs font-bold outline-none text-slate-600 w-full cursor-pointer">
+                    <option value="Высокий">🔥 High</option>
+                    <option value="Обычный" selected>⚡️ Normal</option>
+                    <option value="Низкий">☁️ Low</option>
                 </select>
             </div>
         </div>
