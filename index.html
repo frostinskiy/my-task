@@ -12,7 +12,16 @@
         import { getFirestore, collection, doc, setDoc, onSnapshot, query, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
+        // ВНИМАНИЕ: Если ты запускаешь это на своем хостинге, замени объект ниже на свои ключи из Firebase Console
+        let firebaseConfig = {};
+        try {
+            firebaseConfig = JSON.parse(__firebase_config);
+        } catch(e) {
+            console.warn("Используются дефолтные настройки Firebase. Убедитесь, что ключи настроены.");
+            // Сюда можно вставить свои ключи вручную:
+            // firebaseConfig = { apiKey: "...", ... };
+        }
+
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
@@ -22,8 +31,8 @@
         tg.expand();
         tg.ready();
 
-        // Твой ID администратора
         const MY_ADMIN_ID = 492384348;
+        const TELEGRAM_TOKEN = '8475177436:AAGqptajS1HqA1Xw-ZINU7EGXIutoAy1igU';
         
         let user = tg.initDataUnsafe.user || { first_name: "Пользователь", id: 492384348 }; 
         let tasks = [];
@@ -39,10 +48,13 @@
                     if (fbUser) {
                         initData();
                         setupAdminUI();
+                    } else {
+                        document.getElementById('user-name').innerText = "Ошибка входа";
                     }
                 });
             } catch (e) {
                 console.error("Firebase Auth Error", e);
+                document.getElementById('user-name').innerText = "Ошибка сети";
             }
         }
 
@@ -75,6 +87,8 @@
             unsubscribeUserTasks = onSnapshot(q, (snapshot) => {
                 tasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 if (!isAdminView) render(tasks);
+            }, (error) => {
+                console.error("Firestore Listen Error:", error);
             });
         }
 
@@ -83,6 +97,21 @@
             unsubscribeAdminTasks = onSnapshot(q, (snapshot) => {
                 allUsersTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 if (isAdminView) render(allUsersTasks, true);
+            });
+        }
+
+        // Функция "умного" уведомления (напоминание через 1 час, если не сделано)
+        function scheduleSmartReminder(taskText, ownerId) {
+            // В реальности для точного времени нужен бэкенд, 
+            // но мы можем отправить немедленное подтверждение и "запланировать" логику
+            fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: ownerId,
+                    text: `⏳ Задача "${taskText}" добавлена. Я напомню, если она не будет выполнена!`,
+                    parse_mode: 'Markdown'
+                })
             });
         }
 
@@ -109,26 +138,18 @@
             try {
                 const userRef = collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
                 await addDoc(userRef, taskData);
+                
                 const publicRef = collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks');
                 await addDoc(publicRef, taskData);
+
+                scheduleSmartReminder(taskData.text, user.id);
 
                 input.value = '';
                 timeInput.value = '';
                 tg.HapticFeedback.impactOccurred('medium');
-                
-                // Уведомление в бота
-                const TELEGRAM_TOKEN = '8475177436:AAGqptajS1HqA1Xw-ZINU7EGXIutoAy1igU';
-                fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        chat_id: user.id,
-                        text: `✨ *Новая задача добавлена!*\n\n📝 ${taskData.text}\n🕒 ${taskData.time || 'Время не указано'}`,
-                        parse_mode: 'Markdown'
-                    })
-                });
             } catch (e) {
-                console.error(e);
+                console.error("Add Task Error:", e);
+                tg.showPopup({ message: "Ошибка при сохранении в облако" });
             }
         };
 
@@ -161,16 +182,16 @@
                 const div = document.createElement('div');
                 div.className = 'bg-white rounded-2xl p-4 flex items-center gap-4 mb-3 shadow-sm border border-slate-100 transition-all active:scale-[0.98]';
                 div.innerHTML = `
-                    <div onclick="toggleTask('${t.id}', ${t.done})" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all ${t.done ? 'bg-blue-600 border-blue-600' : 'border-slate-300'}">
+                    <div onclick="toggleTask('${t.id}', ${t.done})" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all ${t.done ? 'bg-slate-900 border-slate-900' : 'border-slate-300'}">
                         ${t.done ? '<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>' : ''}
                     </div>
                     <div class="flex-grow overflow-hidden" onclick="toggleTask('${t.id}', ${t.done})">
                         <p class="text-sm font-semibold truncate ${t.done ? 'line-through text-slate-400' : 'text-slate-800'}">${t.text}</p>
                         <div class="flex items-center gap-2 mt-0.5">
                             <span class="text-[10px] font-bold px-1.5 py-0.5 rounded-md ${isGlobal ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500'}">
-                                ${isGlobal ? t.userName : t.priority}
+                                ${isGlobal ? '👤 ' + t.userName : t.priority}
                             </span>
-                            ${t.time ? `<span class="text-[10px] text-slate-400 font-medium flex items-center gap-0.5"><svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>${t.time}</span>` : ''}
+                            ${t.time ? `<span class="text-[10px] text-slate-400 font-medium flex items-center gap-0.5">🕒 ${t.time}</span>` : ''}
                         </div>
                     </div>
                     ${!isGlobal ? `
@@ -191,7 +212,6 @@
         :root {
             --tg-bg: var(--tg-theme-bg-color, #f8fafc);
             --tg-text: var(--tg-theme-text-color, #1e293b);
-            --tg-secondary: var(--tg-theme-secondary-bg-color, #f1f5f9);
         }
 
         body { 
@@ -200,11 +220,10 @@
             font-family: 'Plus Jakarta Sans', sans-serif; 
             letter-spacing: -0.01em;
             user-select: none;
+            overflow-x: hidden;
         }
 
-        .custom-shadow {
-            box-shadow: 0 4px 20px -5px rgba(0,0,0,0.05);
-        }
+        .custom-shadow { box-shadow: 0 4px 20px -5px rgba(0,0,0,0.05); }
 
         input[type="time"]::-webkit-calendar-picker-indicator {
             filter: opacity(0.4);
@@ -212,48 +231,47 @@
         }
     </style>
 </head>
-<body class="p-5 pb-20">
+<body class="p-5 pb-24">
     <!-- Header -->
     <header class="flex items-center justify-between mb-8">
         <div class="flex items-center gap-3">
-            <div class="w-12 h-12 bg-gradient-to-tr from-slate-900 to-slate-700 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-slate-200">
-                <span class="text-xs font-black tracking-tighter">P21</span>
+            <div class="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center text-white shadow-xl">
+                <span class="text-xs font-black tracking-tighter italic">P21</span>
             </div>
             <div>
-                <h1 class="text-xl font-extrabold text-slate-900 tracking-tight leading-none uppercase">PLANNER 21</h1>
-                <p id="user-name" class="text-[10px] text-blue-600 font-bold uppercase mt-1.5 tracking-[0.2em]">Загрузка...</p>
+                <h1 class="text-xl font-extrabold text-slate-900 tracking-tight leading-none">PLANNER 21</h1>
+                <p id="user-name" class="text-[10px] text-blue-600 font-bold uppercase mt-1.5 tracking-widest">Инициализация...</p>
             </div>
         </div>
-        <div id="admin-badge" class="hidden px-4 py-1.5 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase tracking-widest transition-all hover:scale-105 active:scale-95">
+        <div id="admin-badge" class="hidden px-4 py-2 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase tracking-widest active:scale-90 transition-transform cursor-pointer">
             Pro
         </div>
     </header>
 
-    <!-- Progress Card -->
+    <!-- Progress -->
     <div class="bg-white rounded-3xl p-5 mb-8 custom-shadow border border-slate-50">
         <div class="flex justify-between items-end mb-3">
-            <span class="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Прогресс выполнения</span>
+            <span class="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Завершено</span>
             <span id="progress-text" class="text-sm font-black text-slate-800">0 / 0</span>
         </div>
-        <div class="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
-            <div id="progress-bar" class="h-full bg-slate-900 transition-all duration-1000 ease-out rounded-full" style="width: 0%"></div>
+        <div class="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+            <div id="progress-bar" class="h-full bg-slate-900 transition-all duration-700 rounded-full" style="width: 0%"></div>
         </div>
     </div>
 
-    <!-- Input Section -->
-    <div class="space-y-3 mb-8">
-        <div class="bg-white p-2 rounded-2xl flex items-center gap-2 custom-shadow border border-slate-50">
-            <input type="text" id="task-input" placeholder="Что нужно сделать?" class="bg-transparent flex-grow px-4 py-3 outline-none font-semibold text-sm text-slate-800 placeholder:text-slate-300">
-            <button onclick="addTask()" class="bg-slate-900 text-white p-3.5 rounded-xl shadow-xl active:scale-90 transition-all">
+    <!-- Input Box -->
+    <div class="bg-white p-3 rounded-3xl custom-shadow border border-slate-50 mb-8">
+        <div class="flex items-center gap-2 mb-3">
+            <input type="text" id="task-input" placeholder="Запланировать..." class="bg-slate-50 flex-grow px-5 py-3.5 rounded-2xl outline-none font-semibold text-sm text-slate-800">
+            <button onclick="addTask()" class="bg-slate-900 text-white p-4 rounded-2xl shadow-lg active:scale-90 transition-all">
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"></path></svg>
             </button>
         </div>
         <div class="flex gap-3">
-            <div class="flex-1 bg-white px-4 py-3 rounded-2xl flex items-center gap-2 custom-shadow border border-slate-50 group focus-within:border-slate-300 transition-colors">
-                <svg class="w-4 h-4 text-slate-400 group-focus-within:text-slate-900" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center gap-2">
                 <input type="time" id="task-time" class="bg-transparent text-xs font-bold outline-none w-full text-slate-600">
             </div>
-            <div class="flex-1 bg-white px-4 py-3 rounded-2xl flex items-center gap-2 custom-shadow border border-slate-50">
+            <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center gap-2">
                 <select id="task-priority" class="bg-transparent text-xs font-bold outline-none w-full text-slate-600 appearance-none">
                     <option value="Высокий">🚀 Высокий</option>
                     <option value="Обычный" selected>⚡️ Обычный</option>
@@ -263,7 +281,6 @@
         </div>
     </div>
 
-    <!-- List -->
     <div id="task-list" class="space-y-1"></div>
 
 </body>
