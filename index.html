@@ -6,273 +6,247 @@
     <title>PLANNER 21</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, collection, doc, setDoc, onSnapshot, query, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        // ВНИМАНИЕ: Если ты запускаешь это на своем хостинге, замени объект ниже на свои ключи из Firebase Console
-        let firebaseConfig = {};
-        try {
-            firebaseConfig = JSON.parse(__firebase_config);
-        } catch(e) {
-            console.warn("Используются дефолтные настройки Firebase. Убедитесь, что ключи настроены.");
-            // Сюда можно вставить свои ключи вручную:
-            // firebaseConfig = { apiKey: "...", ... };
-        }
-
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        const auth = getAuth(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'todo-mini-app';
-
+        // --- КОНФИГУРАЦИЯ ---
+        const MY_ADMIN_ID = 492384348;
+        const TELEGRAM_TOKEN = '8475177436:AAGqptajS1HqA1Xw-ZINU7EGXIutoAy1igU';
+        
         const tg = window.Telegram.WebApp;
         tg.expand();
         tg.ready();
 
-        const MY_ADMIN_ID = 492384348;
-        const TELEGRAM_TOKEN = '8475177436:AAGqptajS1HqA1Xw-ZINU7EGXIutoAy1igU';
-        
-        let user = tg.initDataUnsafe.user || { first_name: "Пользователь", id: 492384348 }; 
-        let tasks = [];
-        let allUsersTasks = []; 
-        let isAdminView = false;
-        let unsubscribeUserTasks = null;
-        let unsubscribeAdminTasks = null;
+        // 1. Пытаемся получить конфиг. Если его нет - создаем пустой объект для проверки
+        let firebaseConfig = null;
+        try {
+            if (typeof __firebase_config !== 'undefined') {
+                firebaseConfig = JSON.parse(__firebase_config);
+            }
+        } catch(e) {}
 
-        async function startApp() {
+        // --- ЕСЛИ ТЫ НА СВОЕМ САЙТЕ, ВСТАВЬ ДАННЫЕ СЮДА ---
+        if (!firebaseConfig || !firebaseConfig.apiKey) {
+            firebaseConfig = {
+                apiKey: "ВАШ_API_KEY",
+                authDomain: "ВАШ_PROJECT.firebaseapp.com",
+                projectId: "ВАШ_PROJECT_ID",
+                storageBucket: "ВАШ_PROJECT.appspot.com",
+                messagingSenderId: "ВАШ_SENDER_ID",
+                appId: "ВАШ_APP_ID"
+            };
+        }
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'planner21';
+        let db, auth;
+        let user = tg.initDataUnsafe.user || { first_name: "User", id: 492384348 };
+        let tasks = [];
+        let isAdminMode = false;
+
+        async function init() {
+            const userNameEl = document.getElementById('user-name');
+            
+            // Если ключи не заменены
+            if (firebaseConfig.apiKey === "ВАШ_API_KEY") {
+                userNameEl.innerText = "ОШИБКА КОНФИГА";
+                userNameEl.classList.add('text-red-500');
+                return;
+            }
+
             try {
-                await signInAnonymously(auth);
-                onAuthStateChanged(auth, (fbUser) => {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                onAuthStateChanged(auth, async (fbUser) => {
                     if (fbUser) {
-                        initData();
-                        setupAdminUI();
+                        userNameEl.innerText = user.first_name;
+                        startListening();
+                        checkAdminStatus();
                     } else {
-                        document.getElementById('user-name').innerText = "Ошибка входа";
+                        signInAnonymously(auth).catch(e => {
+                            userNameEl.innerText = "ОШИБКА СЕТИ";
+                        });
                     }
                 });
-            } catch (e) {
-                console.error("Firebase Auth Error", e);
-                document.getElementById('user-name').innerText = "Ошибка сети";
+            } catch (err) {
+                userNameEl.innerText = "ОШИБКА ИНИЦ.";
             }
         }
 
-        function setupAdminUI() {
-            const adminBadge = document.getElementById('admin-badge');
+        function checkAdminStatus() {
             if (user.id === MY_ADMIN_ID) {
-                adminBadge.classList.remove('hidden');
-                adminBadge.onclick = toggleAdminMode;
+                const badge = document.getElementById('admin-badge');
+                badge.classList.remove('hidden');
+                badge.onclick = toggleAdmin;
             }
         }
 
-        function toggleAdminMode() {
-            isAdminView = !isAdminView;
+        function toggleAdmin() {
+            isAdminMode = !isAdminMode;
             const badge = document.getElementById('admin-badge');
-            badge.innerText = isAdminView ? "ADMIN" : "PRO";
-            badge.classList.toggle('bg-red-500', isAdminView);
-            badge.classList.toggle('text-white', isAdminView);
-            
-            if (isAdminView) {
-                listenAllTasks();
-            } else {
-                if (unsubscribeAdminTasks) unsubscribeAdminTasks();
-                render(tasks);
-            }
+            badge.innerText = isAdminMode ? "ADMIN" : "PRO";
+            badge.classList.toggle('bg-red-500', isAdminMode);
+            startListening();
             tg.HapticFeedback.impactOccurred('medium');
         }
 
-        function initData() {
-            const q = collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
-            unsubscribeUserTasks = onSnapshot(q, (snapshot) => {
-                tasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                if (!isAdminView) render(tasks);
-            }, (error) => {
-                console.error("Firestore Listen Error:", error);
-            });
-        }
+        function startListening() {
+            // Путь согласно ПРАВИЛУ 1
+            const collectionName = isAdminMode ? 'all_tasks' : 'tasks';
+            const path = isAdminMode 
+                ? collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks')
+                : collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
 
-        function listenAllTasks() {
-            const q = collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks');
-            unsubscribeAdminTasks = onSnapshot(q, (snapshot) => {
-                allUsersTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                if (isAdminView) render(allUsersTasks, true);
-            });
-        }
-
-        // Функция "умного" уведомления (напоминание через 1 час, если не сделано)
-        function scheduleSmartReminder(taskText, ownerId) {
-            // В реальности для точного времени нужен бэкенд, 
-            // но мы можем отправить немедленное подтверждение и "запланировать" логику
-            fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    chat_id: ownerId,
-                    text: `⏳ Задача "${taskText}" добавлена. Я напомню, если она не будет выполнена!`,
-                    parse_mode: 'Markdown'
-                })
+            onSnapshot(path, (snap) => {
+                tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                render(tasks);
+            }, (err) => {
+                console.error(err);
             });
         }
 
         window.addTask = async () => {
             const input = document.getElementById('task-input');
-            const timeInput = document.getElementById('task-time');
-            const priorityInput = document.getElementById('task-priority');
+            const time = document.getElementById('task-time').value;
+            const priority = document.getElementById('task-priority').value;
+            const text = input.value.trim();
 
-            if (!input.value.trim()) {
+            if (!text) {
                 tg.HapticFeedback.notificationOccurred('error');
                 return;
             }
 
-            const taskData = {
-                text: input.value,
-                time: timeInput.value,
-                priority: priorityInput.value,
+            const payload = {
+                text, time, priority,
                 done: false,
                 userName: user.first_name,
-                ownerId: user.id,
+                userId: user.id,
                 createdAt: Date.now()
             };
 
             try {
-                const userRef = collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
-                await addDoc(userRef, taskData);
+                // Добавляем в личный список
+                const userPath = collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
+                await addDoc(userPath, payload);
                 
-                const publicRef = collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks');
-                await addDoc(publicRef, taskData);
-
-                scheduleSmartReminder(taskData.text, user.id);
+                // Добавляем в общий список (для админа)
+                const publicPath = collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks');
+                await addDoc(publicPath, payload);
 
                 input.value = '';
-                timeInput.value = '';
-                tg.HapticFeedback.impactOccurred('medium');
+                tg.HapticFeedback.impactOccurred('light');
+                
+                // Уведомление в бот
+                fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        chat_id: user.id,
+                        text: `✅ *Новая задача:* ${text}\n🕒 *Время:* ${time || 'Не указано'}`,
+                        parse_mode: 'Markdown'
+                    })
+                });
             } catch (e) {
-                console.error("Add Task Error:", e);
-                tg.showPopup({ message: "Ошибка при сохранении в облако" });
+                tg.showPopup({ title: "Ошибка", message: "Не удалось сохранить. Проверьте настройки Firestore." });
             }
         };
 
-        window.toggleTask = async (id, currentStatus) => {
-            if (isAdminView) return; 
-            const docRef = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', id);
-            await updateDoc(docRef, { done: !currentStatus });
+        window.toggleTask = async (id, status) => {
+            if (isAdminMode) return;
+            const ref = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', id);
+            await updateDoc(ref, { done: !status });
             tg.HapticFeedback.selectionChanged();
         };
 
         window.deleteTask = async (id) => {
-            if (isAdminView) return;
-            const docRef = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', id);
-            await deleteDoc(docRef);
+            if (isAdminMode) return;
+            const ref = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', id);
+            await deleteDoc(ref);
             tg.HapticFeedback.impactOccurred('light');
         };
 
-        function render(dataList, isGlobal = false) {
-            const list = document.getElementById('task-list');
-            list.innerHTML = '';
+        function render(listData) {
+            const container = document.getElementById('task-list');
+            container.innerHTML = '';
             
-            const doneCount = dataList.filter(t => t.done).length;
-            const progress = dataList.length > 0 ? (doneCount / dataList.length) * 100 : 0;
+            const done = listData.filter(t => t.done).length;
+            const prog = listData.length > 0 ? (done / listData.length) * 100 : 0;
             
-            document.getElementById('progress-bar').style.width = progress + '%';
-            document.getElementById('progress-text').innerText = `${doneCount} / ${dataList.length}`;
-            document.getElementById('user-name').innerText = isGlobal ? "Глобальная лента" : user.first_name;
+            document.getElementById('progress-bar').style.width = prog + '%';
+            document.getElementById('progress-text').innerText = `${done} / ${listData.length}`;
 
-            dataList.sort((a,b) => b.createdAt - a.createdAt).forEach(t => {
-                const div = document.createElement('div');
-                div.className = 'bg-white rounded-2xl p-4 flex items-center gap-4 mb-3 shadow-sm border border-slate-100 transition-all active:scale-[0.98]';
-                div.innerHTML = `
-                    <div onclick="toggleTask('${t.id}', ${t.done})" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-all ${t.done ? 'bg-slate-900 border-slate-900' : 'border-slate-300'}">
+            listData.sort((a,b) => b.createdAt - a.createdAt).forEach(t => {
+                const el = document.createElement('div');
+                el.className = 'bg-white rounded-2xl p-4 flex items-center gap-4 mb-3 shadow-sm border border-slate-50 transition-all';
+                el.innerHTML = `
+                    <div onclick="toggleTask('${t.id}', ${t.done})" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${t.done ? 'bg-slate-900 border-slate-900' : 'border-slate-200'}">
                         ${t.done ? '<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>' : ''}
                     </div>
                     <div class="flex-grow overflow-hidden" onclick="toggleTask('${t.id}', ${t.done})">
-                        <p class="text-sm font-semibold truncate ${t.done ? 'line-through text-slate-400' : 'text-slate-800'}">${t.text}</p>
-                        <div class="flex items-center gap-2 mt-0.5">
-                            <span class="text-[10px] font-bold px-1.5 py-0.5 rounded-md ${isGlobal ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-500'}">
-                                ${isGlobal ? '👤 ' + t.userName : t.priority}
-                            </span>
-                            ${t.time ? `<span class="text-[10px] text-slate-400 font-medium flex items-center gap-0.5">🕒 ${t.time}</span>` : ''}
+                        <p class="text-sm font-bold truncate ${t.done ? 'line-through text-slate-300' : 'text-slate-800'}">${t.text}</p>
+                        <div class="flex gap-2 mt-1 items-center">
+                            <span class="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">${isAdminMode ? t.userName : t.priority}</span>
+                            ${t.time ? `<span class="text-[9px] text-slate-400 font-bold flex items-center gap-1">🕒 ${t.time}</span>` : ''}
                         </div>
                     </div>
-                    ${!isGlobal ? `
-                        <button onclick="deleteTask('${t.id}')" class="text-slate-300 hover:text-red-500 transition-colors p-1">
+                    ${!isAdminMode ? `
+                        <button onclick="deleteTask('${t.id}')" class="text-slate-200 hover:text-red-500 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
                     ` : ''}
                 `;
-                list.appendChild(div);
+                container.appendChild(el);
             });
         }
 
-        startApp();
+        init();
     </script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-        
-        :root {
-            --tg-bg: var(--tg-theme-bg-color, #f8fafc);
-            --tg-text: var(--tg-theme-text-color, #1e293b);
-        }
-
-        body { 
-            background-color: var(--tg-bg); 
-            color: var(--tg-text); 
-            font-family: 'Plus Jakarta Sans', sans-serif; 
-            letter-spacing: -0.01em;
-            user-select: none;
-            overflow-x: hidden;
-        }
-
-        .custom-shadow { box-shadow: 0 4px 20px -5px rgba(0,0,0,0.05); }
-
-        input[type="time"]::-webkit-calendar-picker-indicator {
-            filter: opacity(0.4);
-            cursor: pointer;
-        }
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;700;800&display=swap');
+        body { background: #f8fafc; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+        .custom-shadow { box-shadow: 0 10px 30px -10px rgba(0,0,0,0.05); }
     </style>
 </head>
 <body class="p-5 pb-24">
-    <!-- Header -->
     <header class="flex items-center justify-between mb-8">
         <div class="flex items-center gap-3">
-            <div class="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center text-white shadow-xl">
-                <span class="text-xs font-black tracking-tighter italic">P21</span>
+            <div class="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center text-white shadow-xl rotate-3">
+                <span class="text-xs font-black italic">P21</span>
             </div>
             <div>
-                <h1 class="text-xl font-extrabold text-slate-900 tracking-tight leading-none">PLANNER 21</h1>
-                <p id="user-name" class="text-[10px] text-blue-600 font-bold uppercase mt-1.5 tracking-widest">Инициализация...</p>
+                <h1 class="text-xl font-black text-slate-900 leading-none tracking-tight">PLANNER 21</h1>
+                <p id="user-name" class="text-[10px] text-blue-600 font-bold uppercase mt-1 tracking-widest">Connect...</p>
             </div>
         </div>
-        <div id="admin-badge" class="hidden px-4 py-2 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase tracking-widest active:scale-90 transition-transform cursor-pointer">
-            Pro
-        </div>
+        <div id="admin-badge" class="hidden px-4 py-2 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase cursor-pointer active:scale-95 transition-transform">Pro</div>
     </header>
 
-    <!-- Progress -->
     <div class="bg-white rounded-3xl p-5 mb-8 custom-shadow border border-slate-50">
         <div class="flex justify-between items-end mb-3">
-            <span class="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Завершено</span>
+            <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Твой статус</span>
             <span id="progress-text" class="text-sm font-black text-slate-800">0 / 0</span>
         </div>
-        <div class="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
-            <div id="progress-bar" class="h-full bg-slate-900 transition-all duration-700 rounded-full" style="width: 0%"></div>
+        <div class="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+            <div id="progress-bar" class="h-full bg-slate-900 transition-all duration-1000" style="width: 0%"></div>
         </div>
     </div>
 
-    <!-- Input Box -->
     <div class="bg-white p-3 rounded-3xl custom-shadow border border-slate-50 mb-8">
         <div class="flex items-center gap-2 mb-3">
-            <input type="text" id="task-input" placeholder="Запланировать..." class="bg-slate-50 flex-grow px-5 py-3.5 rounded-2xl outline-none font-semibold text-sm text-slate-800">
+            <input type="text" id="task-input" placeholder="Новая задача..." class="bg-slate-50 flex-grow px-5 py-4 rounded-2xl outline-none font-bold text-sm text-slate-800">
             <button onclick="addTask()" class="bg-slate-900 text-white p-4 rounded-2xl shadow-lg active:scale-90 transition-all">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"></path></svg>
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"></path></svg>
             </button>
         </div>
         <div class="flex gap-3">
-            <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center gap-2">
+            <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center">
                 <input type="time" id="task-time" class="bg-transparent text-xs font-bold outline-none w-full text-slate-600">
             </div>
-            <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center gap-2">
-                <select id="task-priority" class="bg-transparent text-xs font-bold outline-none w-full text-slate-600 appearance-none">
+            <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center">
+                <select id="task-priority" class="bg-transparent text-xs font-bold outline-none w-full text-slate-600">
                     <option value="Высокий">🚀 Высокий</option>
                     <option value="Обычный" selected>⚡️ Обычный</option>
                     <option value="Низкий">☁️ Низкий</option>
@@ -282,6 +256,5 @@
     </div>
 
     <div id="task-list" class="space-y-1"></div>
-
 </body>
 </html>
