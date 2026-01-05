@@ -10,24 +10,17 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, where, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        const firebaseConfig = {
-            apiKey: "AIzaSyDFPgvkN6yAxcJqbUak-bh5akmL5oiPSCs",
-            authDomain: "planner21-47147.firebaseapp.com",
-            projectId: "planner21-47147",
-            storageBucket: "planner21-47147.firebasestorage.app",
-            messagingSenderId: "678376272314",
-            appId: "1:678376272314:web:4519c23ede2462f6d7ad83",
-            measurementId: "G-2RRNNW5YZY"
-        };
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'planner21-prod';
 
         const tg = window.Telegram.WebApp;
         tg.expand();
 
-        let db, auth, fbUser;
-        const GLOBAL_APP_ID = 'planner21-prod'; 
-        
         const getInitialName = () => {
             if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
                 const tgUser = tg.initDataUnsafe.user;
@@ -38,7 +31,7 @@
 
         let user = {
             first_name: getInitialName(),
-            id: tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : 492384348
+            id: tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : 'guest_' + Math.random().toString(36).substr(2, 9)
         };
 
         let currentRoomId = String(user.id);
@@ -56,6 +49,14 @@
             { id: 'other', icon: '🌊', label: 'Вайб' }
         ];
 
+        async function initAuth() {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+        }
+
         async function init() {
             document.getElementById('task-date').valueAsDate = new Date();
             document.getElementById('display-name').innerText = user.first_name;
@@ -63,16 +64,11 @@
             renderCategories();
             updateRoomUI();
 
-            const app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
+            await initAuth();
 
-            onAuthStateChanged(auth, async (userCred) => {
-                if (userCred) {
-                    fbUser = userCred;
+            onAuthStateChanged(auth, (u) => {
+                if (u) {
                     startListening();
-                } else {
-                    await signInAnonymously(auth);
                 }
             });
 
@@ -89,18 +85,19 @@
             if (logoClickCount >= 5) {
                 logoClickCount = 0;
                 if (isAdmin) {
-                    // Если уже админ, даем сменить комнату вручную
                     const nr = prompt("ID комнаты:", currentRoomId);
                     if (nr) { currentRoomId = nr; startListening(); updateRoomUI(); }
                     return;
                 }
                 const pass = prompt("Код доступа:");
-                if (pass === "0000") {
+                // Установлен новый пароль 8055
+                if (pass === "8055") {
                     isAdmin = true;
                     document.getElementById('admin-badge').classList.remove('hidden');
                     tg.HapticFeedback.notificationOccurred('success');
-                    // Переключаемся на глобальную коллекцию всех задач
                     startAdminGlobalListening();
+                } else {
+                    tg.HapticFeedback.notificationOccurred('error');
                 }
             }
         };
@@ -110,37 +107,34 @@
             unsubscribers = [];
         }
 
-        // Обычный режим: только свои задачи
         function startListening() {
-            if (!fbUser || isAdmin) return;
+            if (!auth.currentUser || isAdmin) return;
             clearListeners();
-            const collectionPath = collection(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${currentRoomId}`);
+            const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', `tasks_${currentRoomId}`);
             const unsub = onSnapshot(collectionPath, (snap) => {
                 tasks = snap.docs.map(d => ({ id: d.id, roomId: currentRoomId, ...d.data() }));
                 render();
-            });
+            }, (err) => console.error("Firestore Error:", err));
             unsubscribers.push(unsub);
         }
 
-        // АДМИН-РЕЖИМ: Слушаем специальную коллекцию, куда дублируются все задачи для обзора
-        // Либо используем упрощенный поиск по всем активным веткам
         function startAdminGlobalListening() {
-            if (!fbUser) return;
+            if (!auth.currentUser) return;
             clearListeners();
             
-            // В данной архитектуре, чтобы видеть ВСЕХ, мы подписываемся на мастер-коллекцию "all_tasks"
-            // В addTask добавлена запись в это место для админа
-            const globalPath = collection(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', 'all_tasks_registry');
+            const globalPath = collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks_registry');
             const unsub = onSnapshot(globalPath, (snap) => {
                 tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 render();
+            }, (err) => {
+                console.error("Admin Registry Error:", err);
             });
             unsubscribers.push(unsub);
-            document.getElementById('room-id-display').innerText = "ОБЗОР ВСЕХ ПОЛЬЗОВАТЕЛЕЙ";
+            document.getElementById('room-id-display').innerText = "ОБЗОР ВСЕХ";
         }
 
         window.addTask = async () => {
-            if (!fbUser) return;
+            if (!auth.currentUser) return;
             const input = document.getElementById('task-input');
             const time = document.getElementById('task-time').value;
             const date = document.getElementById('task-date').value;
@@ -159,35 +153,36 @@
                 roomId: currentRoomId
             };
 
-            // Сохраняем в комнату
-            await addDoc(collection(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${currentRoomId}`), payload);
-            
-            // Дублируем в глобальный реестр для админа
-            await addDoc(collection(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', 'all_tasks_registry'), payload);
-
-            input.value = '';
-            tg.HapticFeedback.impactOccurred('medium');
+            try {
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', `tasks_${currentRoomId}`), payload);
+                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks_registry'), payload);
+                
+                input.value = '';
+                tg.HapticFeedback.impactOccurred('medium');
+            } catch (e) {
+                console.error("Add Error:", e);
+            }
         };
 
         window.toggleTask = async (id, currentStatus, taskRoomId) => {
+            if (!auth.currentUser) return;
             const target = taskRoomId || currentRoomId;
-            // Обновляем в локальной комнате
-            const refLocal = doc(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${target}`, id);
-            // Если мы в режиме админа, нам нужно найти ID документа в реестре (обычно они разные, но для простоты обновляем реестр)
-            // В идеале ID должны совпадать. Для этого решения мы просто обновляем текущую задачу в списке.
-            
-            await updateDoc(refLocal, { done: !currentStatus });
-            
-            // Находим и обновляем в глобальном реестре (по тексту и времени для простоты поиска)
-            // В проде здесь должен быть одинаковый ID документа.
-            if (!currentStatus) confetti({ particleCount: 30, origin: { y: 0.8 } });
+            try {
+                const refLocal = doc(db, 'artifacts', appId, 'public', 'data', `tasks_${target}`, id);
+                await updateDoc(refLocal, { done: !currentStatus });
+                
+                if (!currentStatus) confetti({ particleCount: 30, origin: { y: 0.8 } });
+            } catch (e) {
+                console.error("Toggle Error:", e);
+            }
         };
 
         window.deleteTask = async (id, taskRoomId) => {
+            if (!auth.currentUser) return;
             const target = taskRoomId || currentRoomId;
-            tg.showConfirm("Удалить задачу навсегда?", async (ok) => {
+            tg.showConfirm("Удалить?", async (ok) => {
                 if (ok) {
-                    await deleteDoc(doc(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${target}`, id));
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', `tasks_${target}`, id));
                 }
             });
         };
@@ -195,7 +190,7 @@
         function updateRoomUI() {
             if (isAdmin) return;
             const isPrivate = currentRoomId === String(user.id);
-            document.getElementById('room-id-display').innerText = isPrivate ? 'Личное' : `Группа: ${currentRoomId}`;
+            document.getElementById('room-id-display').innerText = isPrivate ? 'Личное' : `ID: ${currentRoomId}`;
         }
 
         let selectedCat = 'other';
@@ -223,6 +218,11 @@
             document.getElementById('progress-bar').style.width = progress + '%';
             document.getElementById('progress-text').innerText = `${doneCount} / ${tasks.length}`;
 
+            if (tasks.length === 0) {
+                container.innerHTML = `<div class="text-center py-10 text-slate-400 text-xs font-bold uppercase tracking-widest">Список пуст</div>`;
+                return;
+            }
+
             tasks.sort((a,b) => b.createdAt - a.createdAt).forEach(t => {
                 const cat = categories.find(c => c.id === t.category) || categories[4];
                 const el = document.createElement('div');
@@ -240,8 +240,8 @@
                             <span class="text-[8px] font-bold text-slate-400 px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded">${t.date}</span>
                             <span class="text-[8px] font-black ${t.priority === 'Высокий' ? 'text-rose-500' : 'text-indigo-400'} uppercase">${t.priority}</span>
                             ${isAdmin ? `
-                                <span class="text-[9px] font-black text-white px-2 py-0.5 rounded-full bg-indigo-500 uppercase">Автор: ${t.author || 'Гость'}</span>
-                                <span class="text-[9px] font-bold ${t.done ? 'text-emerald-500' : 'text-rose-500'} uppercase underline">${t.done ? 'ВЫПОЛНЕНО' : 'В ПРОЦЕССЕ'}</span>
+                                <span class="text-[9px] font-black text-white px-2 py-0.5 rounded-full bg-indigo-500 uppercase">👤 ${t.author || 'Гость'}</span>
+                                <span class="text-[9px] font-bold ${t.done ? 'text-emerald-500' : 'text-rose-500'} uppercase">${t.done ? '✓ Готово' : '○ В работе'}</span>
                             ` : ''}
                         </div>
                     </div>
@@ -288,7 +288,6 @@
         </div>
     </div>
 
-    <!-- Поле ввода новой задачи -->
     <div class="bg-white dark:bg-slate-900 rounded-[2rem] mb-10 border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
         <div class="flex items-center">
             <input type="text" id="task-input" placeholder="Новая цель..." class="dark:text-white">
