@@ -8,10 +8,9 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        // --- КОНФИГУРАЦИЯ ---
         const firebaseConfig = {
             apiKey: "AIzaSyDFPgvkN6yAxcJqbUak-bh5akmL5oiPSCs",
             authDomain: "planner21-47147.firebaseapp.com",
@@ -31,10 +30,11 @@
         tg.ready();
 
         let db, auth;
-        let user = tg.initDataUnsafe.user || { first_name: "Admin", id: 492384348 };
+        let user = tg.initDataUnsafe.user || { first_name: "Пользователь", id: 492384348 };
         let tasks = [];
         let isAdminMode = false;
-        let remindedTasks = new Set();
+        let lastNotified = {}; 
+        let unsubscribe = null; // Для отписки от предыдущих слушателей
 
         async function init() {
             const userNameEl = document.getElementById('user-name');
@@ -46,24 +46,17 @@
                 onAuthStateChanged(auth, async (fbUser) => {
                     if (fbUser) {
                         userNameEl.innerText = user.first_name;
+                        userNameEl.classList.remove('text-indigo-500');
+                        userNameEl.classList.add('text-green-600');
                         startListening();
                         checkAdminStatus();
                         startReminderEngine();
                     } else {
-                        try {
-                            await signInAnonymously(auth);
-                        } catch (authErr) {
-                            console.error("Auth Error:", authErr);
-                            tg.showPopup({ 
-                                title: "Ошибка авторизации", 
-                                message: "Включите 'Anonymous' в Firebase Console -> Authentication -> Sign-in method" 
-                            });
-                        }
+                        await signInAnonymously(auth);
                     }
                 });
             } catch (err) {
                 userNameEl.innerText = "ОШИБКА БАЗЫ";
-                console.error(err);
             }
         }
 
@@ -82,42 +75,56 @@
             badge.innerText = isAdminMode ? "ADMIN VIEW" : "MY TASKS";
             badge.classList.toggle('bg-red-500', isAdminMode);
             badge.classList.toggle('text-white', isAdminMode);
-            startListening();
+            startListening(); // Переподключаемся к нужной коллекции
             tg.HapticFeedback.impactOccurred('medium');
         }
 
         function startListening() {
+            if (unsubscribe) unsubscribe(); // Отписываемся от старой коллекции
+
             const path = isAdminMode 
                 ? collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks')
                 : collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
 
-            onSnapshot(path, (snap) => {
+            // Используем простой запрос без сложных фильтров для стабильности
+            unsubscribe = onSnapshot(path, (snap) => {
                 tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 render(tasks);
             }, (err) => {
-                console.error("Firestore error:", err);
-                if (err.code === 'permission-denied') {
-                    tg.showPopup({ title: "Ошибка доступа", message: "Настройте Rules в Firestore (allow read, write: if true;)" });
-                }
+                console.error("Firestore Error:", err);
             });
         }
 
         function startReminderEngine() {
             setInterval(() => {
                 const now = new Date();
-                const currentStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+                const currentTime = now.getHours() * 60 + now.getMinutes();
+                const nowMs = Date.now();
                 
                 tasks.forEach(task => {
-                    if (!task.done && task.time && task.time <= currentStr && !remindedTasks.has(task.id)) {
-                        sendTelegramNotification(task);
-                        remindedTasks.add(task.id);
+                    if (!task.done && task.time) {
+                        const [h, m] = task.time.split(':').map(Number);
+                        const taskTimeMinutes = h * 60 + m;
+
+                        const isExactTime = taskTimeMinutes === currentTime;
+                        const isOverdue = currentTime > taskTimeMinutes;
+
+                        const lastTime = lastNotified[task.id] || 0;
+                        const timeSinceLastNotify = (nowMs - lastTime) / (1000 * 60);
+
+                        if (isExactTime && lastTime === 0) {
+                            sendTelegramNotification(task, "Пришло время выполнить задачу!");
+                        } else if (isOverdue && timeSinceLastNotify >= 30) {
+                            sendTelegramNotification(task, "Задача все еще не выполнена. Не забудьте про нее!");
+                        }
                     }
                 });
-            }, 60000); 
+            }, 30000); 
         }
 
-        async function sendTelegramNotification(task) {
-            const text = `🔔 *Напоминание:* \n\nЗадача "${task.text}" ожидает выполнения. \n🕒 Время: ${task.time}`;
+        async function sendTelegramNotification(task, message) {
+            lastNotified[task.id] = Date.now();
+            const text = `🔔 *Напоминание:* \n\n"${task.text}"\n\n_${message}_ \n🕒 Время: ${task.time}`;
             try {
                 await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
                     method: 'POST',
@@ -128,7 +135,7 @@
                         parse_mode: 'Markdown'
                     })
                 });
-            } catch (e) { console.error("Notify error", e); }
+            } catch (e) { console.error("Notification failed", e); }
         }
 
         window.addTask = async () => {
@@ -151,20 +158,15 @@
             };
 
             try {
+                // Сохраняем в личную коллекцию
                 await addDoc(collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks'), payload);
+                // Сохраняем в общую коллекцию (для админа)
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks'), payload);
-
+                
                 input.value = '';
                 tg.HapticFeedback.impactOccurred('light');
-                
-                // Эффект успешного добавления
-                const btn = document.getElementById('add-btn');
-                btn.classList.add('bg-green-500');
-                setTimeout(() => btn.classList.remove('bg-green-500'), 500);
-
             } catch (e) {
-                console.error(e);
-                tg.showPopup({ title: "Ошибка", message: "Не удалось сохранить в БД." });
+                tg.showPopup({ title: "Ошибка", message: "Не удалось сохранить." });
             }
         };
 
@@ -185,6 +187,7 @@
         function render(listData) {
             const container = document.getElementById('task-list');
             container.innerHTML = '';
+            
             const doneCount = listData.filter(t => t.done).length;
             const total = listData.length;
             const prog = total > 0 ? (doneCount / total) * 100 : 0;
@@ -192,6 +195,12 @@
             document.getElementById('progress-bar').style.width = prog + '%';
             document.getElementById('progress-text').innerText = `${doneCount} / ${total}`;
 
+            if (total === 0) {
+                container.innerHTML = '<div class="text-center py-10 opacity-20 font-bold uppercase text-[10px] tracking-widest">Список пуст</div>';
+                return;
+            }
+
+            // Сортируем локально по дате создания
             listData.sort((a,b) => b.createdAt - a.createdAt).forEach(t => {
                 const el = document.createElement('div');
                 el.className = 'bg-white rounded-2xl p-4 flex items-center gap-4 mb-3 shadow-sm border border-slate-50 transition-all active:scale-[0.98]';
@@ -215,31 +224,31 @@
                 container.appendChild(el);
             });
         }
-
         init();
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
         body { background: #fcfdfe; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+        ::-webkit-scrollbar { display: none; }
     </style>
 </head>
-<body class="p-5 pb-24">
+<body class="p-5 pb-24 select-none">
     <header class="flex items-center justify-between mb-8">
         <div class="flex items-center gap-3">
-            <div class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-200 rotate-2">
+            <div class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg rotate-2">
                 <span class="text-xs font-black italic">P21</span>
             </div>
             <div>
                 <h1 class="text-xl font-extrabold text-slate-900 tracking-tight leading-none">PLANNER 21</h1>
-                <p id="user-name" class="text-[10px] text-indigo-500 font-bold uppercase tracking-widest mt-1">Подключение...</p>
+                <p id="user-name" class="text-[10px] font-bold uppercase tracking-widest mt-1 text-indigo-500">Загрузка...</p>
             </div>
         </div>
-        <button id="admin-badge" class="hidden px-4 py-2 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase transition-all active:scale-90"></button>
+        <button id="admin-badge" class="hidden px-4 py-2 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase transition-all"></button>
     </header>
 
     <div class="bg-white rounded-[2.5rem] p-6 mb-8 border border-slate-50 shadow-sm">
         <div class="flex justify-between items-end mb-4">
-            <span class="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Продуктивность</span>
+            <span class="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Прогресс дня</span>
             <span id="progress-text" class="text-sm font-black text-slate-900">0 / 0</span>
         </div>
         <div class="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
@@ -249,23 +258,18 @@
 
     <div class="bg-white p-4 rounded-[2.5rem] border border-slate-50 shadow-sm mb-8">
         <div class="flex items-center gap-2 mb-4">
-            <input type="text" id="task-input" placeholder="Добавить цель..." class="bg-slate-50 flex-grow px-6 py-4 rounded-2xl outline-none font-bold text-sm text-slate-700 placeholder:text-slate-300">
-            <button id="add-btn" onclick="addTask()" class="bg-indigo-600 text-white p-4 rounded-2xl shadow-md shadow-indigo-100 active:scale-90 transition-all">
+            <input type="text" id="task-input" placeholder="Что планируешь?" class="bg-slate-50 flex-grow px-6 py-4 rounded-2xl outline-none font-bold text-sm text-slate-700">
+            <button id="add-btn" onclick="addTask()" class="bg-indigo-600 text-white p-4 rounded-2xl active:scale-90 transition-all">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"></path></svg>
             </button>
         </div>
         <div class="flex gap-3">
-            <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center">
-                <span class="text-xs mr-2 opacity-50">🕒</span>
-                <input type="time" id="task-time" class="bg-transparent text-xs font-bold outline-none text-slate-600 w-full">
-            </div>
-            <div class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl flex items-center">
-                <select id="task-priority" class="bg-transparent text-xs font-bold outline-none text-slate-600 w-full cursor-pointer">
-                    <option value="Высокий">🔥 High</option>
-                    <option value="Обычный" selected>⚡️ Normal</option>
-                    <option value="Низкий">☁️ Low</option>
-                </select>
-            </div>
+            <input type="time" id="task-time" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600">
+            <select id="task-priority" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600">
+                <option value="Высокий">🚀 Срочно</option>
+                <option value="Обычный" selected>⚡️ Обычный</option>
+                <option value="Низкий">☁️ Низкий</option>
+            </select>
         </div>
     </div>
 
