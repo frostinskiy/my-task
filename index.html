@@ -9,7 +9,7 @@
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, arrayUnion, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
         const firebaseConfig = {
@@ -26,7 +26,26 @@
         tg.expand();
 
         let db, auth;
-        let user = tg.initDataUnsafe.user || { first_name: "Пользователь", id: 492384348 };
+        
+        // Улучшенная логика получения имени пользователя из Telegram
+        const getInitialName = () => {
+            const saved = localStorage.getItem('p21_user_name');
+            if (saved) return saved;
+            
+            // Пытаемся достать имя из Telegram WebApp
+            if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
+                const tgUser = tg.initDataUnsafe.user;
+                return tgUser.first_name || (tgUser.username ? `@${tgUser.username}` : "Мой План");
+            }
+            
+            return "Мой План";
+        };
+
+        let user = {
+            first_name: getInitialName(),
+            id: tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : 492384348
+        };
+
         let currentRoomId = String(user.id);
         let tasks = [];
         let unsubscribe = null;
@@ -44,6 +63,7 @@
 
         async function init() {
             document.getElementById('task-date').valueAsDate = new Date();
+            document.getElementById('display-name').innerText = user.first_name;
             renderCategories();
             updateRoomUI();
 
@@ -63,22 +83,46 @@
             } catch (err) {
                 updateStatus('Оффлайн', 'text-rose-400');
             }
+
+            document.getElementById('task-input').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') addTask();
+            });
         }
 
-        // Секретный вход в админку
+        window.openSettings = () => {
+            const action = prompt("Что вы хотите сделать?\n1 - Изменить имя\n2 - Сменить комнату (совместный доступ)", "1");
+            
+            if (action === "1") {
+                const newName = prompt("Введите ваше имя:", user.first_name);
+                if (newName && newName.trim()) {
+                    user.first_name = newName.trim();
+                    localStorage.setItem('p21_user_name', user.first_name);
+                    document.getElementById('display-name').innerText = user.first_name;
+                    tg.HapticFeedback.impactOccurred('medium');
+                }
+            } else if (action === "2") {
+                const newId = prompt("Название комнаты (пусто = личное):", currentRoomId === String(user.id) ? "" : currentRoomId);
+                const finalId = (newId && newId.trim() !== "") ? newId.trim() : String(user.id);
+                if (finalId !== currentRoomId) {
+                    currentRoomId = finalId;
+                    updateRoomUI();
+                    startListening();
+                    tg.HapticFeedback.impactOccurred('heavy');
+                }
+            }
+        };
+
         window.handleLogoClick = () => {
             clickCount++;
             clearTimeout(clickTimer);
             clickTimer = setTimeout(() => clickCount = 0, 2000);
-
             if (clickCount >= 5) {
                 clickCount = 0;
-                const pass = prompt("Введите код администратора:");
-                if (pass === "0000") { // ВАШ ПАРОЛЬ ТУТ
+                const pass = prompt("Код администратора:");
+                if (pass === "0000") {
                     isAdmin = true;
                     document.getElementById('admin-badge').classList.remove('hidden');
                     tg.HapticFeedback.notificationOccurred('success');
-                    alert("Режим администратора активирован");
                 }
             }
         };
@@ -128,7 +172,6 @@
             if (unsubscribe) unsubscribe();
             const appId = 'planner21-prod';
             const collectionPath = collection(db, 'artifacts', appId, 'users', currentRoomId, 'tasks');
-
             unsubscribe = onSnapshot(collectionPath, (snap) => {
                 tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 render();
@@ -167,18 +210,8 @@
             if (!currentStatus) confetti({ particleCount: 30, origin: { y: 0.8 } });
         };
 
-        window.switchRoom = () => {
-            const newId = prompt("Введите название комнаты:", currentRoomId === String(user.id) ? "" : currentRoomId);
-            const finalId = (newId && newId.trim() !== "") ? newId.trim() : String(user.id);
-            if (finalId !== currentRoomId) {
-                currentRoomId = finalId;
-                updateRoomUI();
-                startListening();
-            }
-        };
-
-        window.hTS = (e) => touchStartX = e.touches[0].clientX;
         let touchStartX = 0;
+        window.hTS = (e) => touchStartX = e.touches[0].clientX;
         window.hTM = (e) => {
             const diff = touchStartX - e.touches[0].clientX;
             if (diff > 20 && diff < 100) e.currentTarget.style.transform = `translateX(-${diff}px)`;
@@ -238,7 +271,8 @@
         body { background: #fafbfc; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
         @media (prefers-color-scheme: dark) { body { background: #030712; color: white; } }
         .shadow-vibe-intense { box-shadow: 0 4px 12px -2px rgba(79, 70, 229, 0.3); }
-        input, select { -webkit-appearance: none; background: transparent; border: none !important; outline: none !important; }
+        input[type="text"] { width: 100%; background: transparent; border: none !important; outline: none !important; padding: 1rem 1.25rem; font-weight: 700; }
+        input[type="date"], input[type="time"], select { -webkit-appearance: none; background: transparent; border: none !important; outline: none !important; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
     </style>
 </head>
@@ -250,14 +284,14 @@
             <div onclick="handleLogoClick()" class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-vibe-intense rotate-3 transition-all active:scale-90">
                 <span class="text-[10px] font-black italic">P21</span>
             </div>
-            <div onclick="switchRoom()">
-                <h1 class="text-lg font-extrabold tracking-tight text-slate-900 dark:text-white mb-0.5 flex items-center gap-2">
-                    ${user.first_name}
-                    <span id="admin-badge" class="hidden bg-rose-500 text-white text-[8px] px-1.5 py-0.5 rounded-md uppercase italic">Admin</span>
+            <div onclick="openSettings()">
+                <h1 id="display-name" class="text-lg font-extrabold tracking-tight text-slate-900 dark:text-white mb-0.5 flex items-center gap-2 truncate max-w-[150px]">
+                    Загрузка...
                 </h1>
                 <div class="flex items-center gap-2">
                     <p id="user-status" class="text-[9px] font-bold uppercase tracking-widest text-emerald-500">В сети</p>
                     <span id="room-id-display" class="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-400">Личное</span>
+                    <span id="admin-badge" class="hidden bg-rose-500 text-white text-[8px] px-1.5 py-0.5 rounded-md uppercase italic">Admin</span>
                 </div>
             </div>
         </div>
@@ -274,18 +308,24 @@
     </div>
 
     <!-- Ввод задачи -->
-    <div class="bg-white dark:bg-slate-900 p-2 rounded-[2rem] mb-10 border border-slate-100 dark:border-slate-800 shadow-sm">
-        <div class="flex items-center p-1">
-            <input type="text" id="task-input" placeholder="Какие планы?" class="flex-grow px-5 py-4 font-bold text-sm dark:text-white">
-            <button onclick="addTask()" class="bg-indigo-600 text-white p-4 rounded-full shadow-vibe-intense active:scale-90 transition-all">
-                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" stroke-width="4"></path></svg>
-            </button>
+    <div class="bg-white dark:bg-slate-900 rounded-[2rem] mb-10 border border-slate-100 dark:border-slate-800 shadow-sm overflow-hidden">
+        <div class="flex items-center">
+            <input type="text" id="task-input" placeholder="Какие планы?" class="dark:text-white">
+            <div class="pr-2">
+                <button onclick="addTask()" class="bg-indigo-600 text-white p-4 rounded-full shadow-vibe-intense active:scale-90 transition-all flex items-center justify-center">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" stroke-width="4" stroke-linecap="round"></path></svg>
+                </button>
+            </div>
         </div>
-        <div class="px-4 pb-4">
+        <div class="px-5 pb-5 pt-2">
             <div id="category-select" class="flex gap-2 mb-6 overflow-x-auto no-scrollbar"></div>
             <div class="grid grid-cols-2 gap-3 mb-6">
-                <input type="date" id="task-date" class="bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-xl text-[11px] font-bold dark:text-white">
-                <input type="time" id="task-time" class="bg-slate-50 dark:bg-slate-800/40 p-3.5 rounded-xl text-[11px] font-bold dark:text-white">
+                <div class="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-xl">
+                    <input type="date" id="task-date" class="w-full text-[11px] font-bold dark:text-white">
+                </div>
+                <div class="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-xl">
+                    <input type="time" id="task-time" class="w-full text-[11px] font-bold dark:text-white">
+                </div>
             </div>
             <div class="flex items-center justify-between">
                 <select id="task-priority" class="text-[9px] font-black uppercase text-indigo-500">
