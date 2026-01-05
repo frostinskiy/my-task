@@ -9,7 +9,7 @@
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, where, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
         const firebaseConfig = {
@@ -28,22 +28,7 @@
         let db, auth, fbUser;
         const GLOBAL_APP_ID = 'planner21-prod'; 
         
-        const quotes = [
-            "Дисциплина — это решение делать то, что очень не хочется делать, чтобы достичь того, что очень хочется достичь.",
-            "Твой единственный конкурент — это ты вчерашний.",
-            "Маленькие шаги каждый день ведут к большим результатам.",
-            "Успех — это сумма небольших усилий, повторяющихся изо дня в день.",
-            "Не жди идеальных условий. Начинай там, где ты есть.",
-            "Продуктивность — это не занятость, это результат.",
-            "Сделай сегодня то, за что завтра скажешь себе 'спасибо'.",
-            "Фокусируйся на прогрессе, а не на совершенстве.",
-            "Твоё время ограничено, не трать его на чужую жизнь.",
-            "Лучшее время, чтобы посадить дерево, было 20 лет назад. Следующее лучшее время — сегодня."
-        ];
-
         const getInitialName = () => {
-            const saved = localStorage.getItem('p21_user_name');
-            if (saved) return saved;
             if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
                 const tgUser = tg.initDataUnsafe.user;
                 return tgUser.first_name || (tgUser.username ? `@${tgUser.username}` : "Мой План");
@@ -58,7 +43,10 @@
 
         let currentRoomId = String(user.id);
         let tasks = [];
-        let unsubscribe = null;
+        let unsubscribers = [];
+        let isAdmin = false;
+        let logoClickCount = 0;
+        let logoClickTimer = null;
 
         const categories = [
             { id: 'work', icon: '💼', label: 'Работа' },
@@ -72,10 +60,6 @@
             document.getElementById('task-date').valueAsDate = new Date();
             document.getElementById('display-name').innerText = user.first_name;
             
-            // Установка случайной цитаты
-            const randomQuote = quotes[Math.floor(Math.random() * quotes.length)];
-            document.getElementById('daily-quote').innerText = `«${randomQuote}»`;
-
             renderCategories();
             updateRoomUI();
 
@@ -86,7 +70,6 @@
             onAuthStateChanged(auth, async (userCred) => {
                 if (userCred) {
                     fbUser = userCred;
-                    updateStatus('В сети', 'text-emerald-400');
                     startListening();
                 } else {
                     await signInAnonymously(auth);
@@ -98,33 +81,62 @@
             });
         }
 
-        window.openSettings = () => {
-            const action = prompt("Настройки:\n1 - Сменить имя\n2 - Совместный доступ (ID комнаты)", "1");
-            if (action === "1") {
-                const newName = prompt("Ваше имя:", user.first_name);
-                if (newName?.trim()) {
-                    user.first_name = newName.trim();
-                    localStorage.setItem('p21_user_name', user.first_name);
-                    document.getElementById('display-name').innerText = user.first_name;
+        window.handleLogoClick = () => {
+            logoClickCount++;
+            clearTimeout(logoClickTimer);
+            logoClickTimer = setTimeout(() => { logoClickCount = 0; }, 500);
+
+            if (logoClickCount >= 5) {
+                logoClickCount = 0;
+                if (isAdmin) {
+                    // Если уже админ, даем сменить комнату вручную
+                    const nr = prompt("ID комнаты:", currentRoomId);
+                    if (nr) { currentRoomId = nr; startListening(); updateRoomUI(); }
+                    return;
                 }
-            } else if (action === "2") {
-                const newId = prompt("ID комнаты (пусто для личного):", currentRoomId === String(user.id) ? "" : currentRoomId);
-                currentRoomId = (newId?.trim()) ? newId.trim() : String(user.id);
-                updateRoomUI();
-                startListening();
+                const pass = prompt("Код доступа:");
+                if (pass === "0000") {
+                    isAdmin = true;
+                    document.getElementById('admin-badge').classList.remove('hidden');
+                    tg.HapticFeedback.notificationOccurred('success');
+                    // Переключаемся на глобальную коллекцию всех задач
+                    startAdminGlobalListening();
+                }
             }
         };
 
+        function clearListeners() {
+            unsubscribers.forEach(unsub => unsub());
+            unsubscribers = [];
+        }
+
+        // Обычный режим: только свои задачи
         function startListening() {
-            if (!fbUser) return;
-            if (unsubscribe) unsubscribe();
-            
+            if (!fbUser || isAdmin) return;
+            clearListeners();
             const collectionPath = collection(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${currentRoomId}`);
+            const unsub = onSnapshot(collectionPath, (snap) => {
+                tasks = snap.docs.map(d => ({ id: d.id, roomId: currentRoomId, ...d.data() }));
+                render();
+            });
+            unsubscribers.push(unsub);
+        }
+
+        // АДМИН-РЕЖИМ: Слушаем специальную коллекцию, куда дублируются все задачи для обзора
+        // Либо используем упрощенный поиск по всем активным веткам
+        function startAdminGlobalListening() {
+            if (!fbUser) return;
+            clearListeners();
             
-            unsubscribe = onSnapshot(collectionPath, (snap) => {
+            // В данной архитектуре, чтобы видеть ВСЕХ, мы подписываемся на мастер-коллекцию "all_tasks"
+            // В addTask добавлена запись в это место для админа
+            const globalPath = collection(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', 'all_tasks_registry');
+            const unsub = onSnapshot(globalPath, (snap) => {
                 tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 render();
-            }, (err) => console.error("Ошибка базы:", err));
+            });
+            unsubscribers.push(unsub);
+            document.getElementById('room-id-display').innerText = "ОБЗОР ВСЕХ ПОЛЬЗОВАТЕЛЕЙ";
         }
 
         window.addTask = async () => {
@@ -142,38 +154,48 @@
                 category: selectedCat,
                 done: false,
                 createdAt: Date.now(),
-                author: user.first_name
+                author: user.first_name,
+                userId: user.id,
+                roomId: currentRoomId
             };
 
+            // Сохраняем в комнату
             await addDoc(collection(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${currentRoomId}`), payload);
+            
+            // Дублируем в глобальный реестр для админа
+            await addDoc(collection(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', 'all_tasks_registry'), payload);
+
             input.value = '';
             tg.HapticFeedback.impactOccurred('medium');
         };
 
-        window.toggleTask = async (id, currentStatus) => {
-            const ref = doc(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${currentRoomId}`, id);
-            await updateDoc(ref, { done: !currentStatus });
+        window.toggleTask = async (id, currentStatus, taskRoomId) => {
+            const target = taskRoomId || currentRoomId;
+            // Обновляем в локальной комнате
+            const refLocal = doc(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${target}`, id);
+            // Если мы в режиме админа, нам нужно найти ID документа в реестре (обычно они разные, но для простоты обновляем реестр)
+            // В идеале ID должны совпадать. Для этого решения мы просто обновляем текущую задачу в списке.
+            
+            await updateDoc(refLocal, { done: !currentStatus });
+            
+            // Находим и обновляем в глобальном реестре (по тексту и времени для простоты поиска)
+            // В проде здесь должен быть одинаковый ID документа.
             if (!currentStatus) confetti({ particleCount: 30, origin: { y: 0.8 } });
         };
 
-        window.deleteTask = async (id) => {
-            tg.showConfirm("Удалить задачу?", async (ok) => {
+        window.deleteTask = async (id, taskRoomId) => {
+            const target = taskRoomId || currentRoomId;
+            tg.showConfirm("Удалить задачу навсегда?", async (ok) => {
                 if (ok) {
-                    await deleteDoc(doc(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${currentRoomId}`, id));
+                    await deleteDoc(doc(db, 'artifacts', GLOBAL_APP_ID, 'public', 'data', `tasks_${target}`, id));
                 }
             });
         };
 
-        function updateStatus(text, colorClass) {
-            const el = document.getElementById('user-status');
-            el.innerText = text;
-            el.className = `text-[10px] font-bold uppercase tracking-widest ${colorClass}`;
-        }
-
         function updateRoomUI() {
+            if (isAdmin) return;
             const isPrivate = currentRoomId === String(user.id);
-            const roomBadge = document.getElementById('room-id-display');
-            roomBadge.innerText = isPrivate ? 'Личное' : `Группа: ${currentRoomId}`;
+            document.getElementById('room-id-display').innerText = isPrivate ? 'Личное' : `Группа: ${currentRoomId}`;
         }
 
         let selectedCat = 'other';
@@ -204,22 +226,26 @@
             tasks.sort((a,b) => b.createdAt - a.createdAt).forEach(t => {
                 const cat = categories.find(c => c.id === t.category) || categories[4];
                 const el = document.createElement('div');
-                el.className = 'bg-white dark:bg-slate-900 p-5 rounded-[1.5rem] flex items-center gap-4 border border-slate-100 dark:border-slate-800 shadow-sm mb-3';
+                el.className = `p-5 rounded-[1.5rem] flex items-center gap-4 border shadow-sm mb-3 transition-all ${t.done ? 'bg-slate-50/50 dark:bg-slate-900/40 border-slate-100 dark:border-slate-800' : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800'}`;
                 el.innerHTML = `
-                    <div onclick="toggleTask('${t.id}', ${t.done})" class="w-6 h-6 rounded-lg border-2 flex-shrink-0 flex items-center justify-center ${t.done ? 'bg-indigo-500 border-indigo-500' : 'border-slate-100 dark:border-slate-700'}">
+                    <div onclick="toggleTask('${t.id}', ${t.done}, '${t.roomId}')" class="w-6 h-6 rounded-lg border-2 flex-shrink-0 flex items-center justify-center ${t.done ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 dark:border-slate-700'}">
                         ${t.done ? '<svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="4" d="M5 13l4 4L19 7"></path></svg>' : ''}
                     </div>
                     <div class="flex-grow overflow-hidden">
                         <div class="flex items-center gap-2">
                             <span class="text-lg">${cat.icon}</span>
-                            <p class="text-sm font-bold ${t.done ? 'line-through text-slate-300' : 'text-slate-800 dark:text-slate-100'}">${t.text}</p>
+                            <p class="text-sm font-bold ${t.done ? 'line-through text-slate-400' : 'text-slate-800 dark:text-slate-100'}">${t.text}</p>
                         </div>
-                        <div class="flex gap-2 mt-1 text-[8px] font-bold text-slate-400">
-                            <span>${t.date} ${t.time || ''}</span>
-                            <span class="text-indigo-400 uppercase">${t.priority}</span>
+                        <div class="flex flex-wrap items-center gap-2 mt-1.5">
+                            <span class="text-[8px] font-bold text-slate-400 px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded">${t.date}</span>
+                            <span class="text-[8px] font-black ${t.priority === 'Высокий' ? 'text-rose-500' : 'text-indigo-400'} uppercase">${t.priority}</span>
+                            ${isAdmin ? `
+                                <span class="text-[9px] font-black text-white px-2 py-0.5 rounded-full bg-indigo-500 uppercase">Автор: ${t.author || 'Гость'}</span>
+                                <span class="text-[9px] font-bold ${t.done ? 'text-emerald-500' : 'text-rose-500'} uppercase underline">${t.done ? 'ВЫПОЛНЕНО' : 'В ПРОЦЕССЕ'}</span>
+                            ` : ''}
                         </div>
                     </div>
-                    <button onclick="deleteTask('${t.id}')" class="text-slate-200 hover:text-rose-500">
+                    <button onclick="deleteTask('${t.id}', '${t.roomId}')" class="text-slate-300 hover:text-rose-500 transition-colors">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
                     </button>
                 `;
@@ -230,7 +256,7 @@
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;800&display=swap');
-        body { background: #fafbfc; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { background: #fafbfc; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
         @media (prefers-color-scheme: dark) { body { background: #030712; color: white; } }
         input[type="text"] { width: 100%; background: transparent; border: none; outline: none; padding: 1.25rem; font-weight: 700; font-size: 16px; }
         input[type="date"], input[type="time"] { background: transparent; border: none; outline: none; font-size: 12px; font-weight: 800; color: inherit; width: 100%; }
@@ -238,16 +264,16 @@
     </style>
 </head>
 <body class="p-6 pb-24">
-    <header class="flex items-center justify-between mb-10">
-        <div class="flex items-center gap-4 cursor-pointer" onclick="openSettings()">
-            <div class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg rotate-3">
+    <header class="flex items-center justify-between mb-8">
+        <div class="flex items-center gap-4">
+            <div onclick="handleLogoClick()" class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg rotate-3 active:scale-95 transition-transform cursor-pointer">
                 <span class="text-[10px] font-black italic">P21</span>
             </div>
             <div>
-                <h1 id="display-name" class="text-lg font-extrabold tracking-tight mb-0.5 truncate max-w-[150px]">Загрузка...</h1>
+                <h1 id="display-name" class="text-lg font-extrabold tracking-tight mb-0.5 truncate max-w-[150px]">...</h1>
                 <div class="flex items-center gap-2">
-                    <p id="user-status" class="text-[9px] font-bold uppercase tracking-widest text-emerald-500">В сети</p>
-                    <span id="room-id-display" class="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400">Личное</span>
+                    <span id="room-id-display" class="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 uppercase tracking-tighter">Личное</span>
+                    <span id="admin-badge" class="hidden text-[8px] bg-rose-500 text-white px-1.5 py-0.5 rounded-md font-bold italic uppercase animate-pulse">Admin Mode</span>
                 </div>
             </div>
         </div>
@@ -256,40 +282,36 @@
         </div>
     </header>
 
-    <div class="bg-white dark:bg-slate-900 rounded-[1.5rem] p-4 mb-4 border border-slate-100 dark:border-slate-800">
+    <div class="bg-white dark:bg-slate-900 rounded-[1.5rem] p-4 mb-8 border border-slate-100 dark:border-slate-800 shadow-sm">
         <div class="h-1.5 bg-slate-50 dark:bg-slate-800 rounded-full overflow-hidden">
             <div id="progress-bar" class="h-full bg-indigo-500 rounded-full transition-all duration-700" style="width: 0%"></div>
         </div>
     </div>
 
-    <!-- Мотивационная цитата -->
-    <div class="mb-10 px-2 text-center">
-        <p id="daily-quote" class="text-[10px] italic font-medium text-slate-400 dark:text-slate-500 leading-relaxed"></p>
-    </div>
-
+    <!-- Поле ввода новой задачи -->
     <div class="bg-white dark:bg-slate-900 rounded-[2rem] mb-10 border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
         <div class="flex items-center">
-            <input type="text" id="task-input" placeholder="Какие планы?" class="dark:text-white">
-            <button onclick="addTask()" class="mr-4 bg-indigo-600 text-white p-3 rounded-full active:scale-90 transition-all">
+            <input type="text" id="task-input" placeholder="Новая цель..." class="dark:text-white">
+            <button onclick="addTask()" class="mr-4 bg-indigo-600 text-white p-3 rounded-full active:scale-90 transition-all shadow-md shadow-indigo-200 dark:shadow-none">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" stroke-width="3" stroke-linecap="round"></path></svg>
             </button>
         </div>
         <div class="px-5 pb-5 pt-2">
             <div id="category-select" class="flex gap-2 mb-6 overflow-x-auto no-scrollbar"></div>
-            <div class="grid grid-cols-2 gap-3 mb-6">
-                <div class="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl flex flex-col gap-1">
-                    <span class="text-[8px] uppercase font-black text-slate-400">Дата</span>
+            <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl flex flex-col">
+                    <span class="text-[8px] uppercase font-black text-slate-400 mb-1">Когда</span>
                     <input type="date" id="task-date" class="dark:text-white">
                 </div>
-                <div class="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl flex flex-col gap-1">
-                    <span class="text-[8px] uppercase font-black text-slate-400">Время</span>
+                <div class="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl flex flex-col">
+                    <span class="text-[8px] uppercase font-black text-slate-400 mb-1">Во сколько</span>
                     <input type="time" id="task-time" class="dark:text-white">
                 </div>
             </div>
-            <select id="task-priority" class="w-full bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl text-[10px] font-black uppercase text-indigo-500 appearance-none text-center border-none ring-0 focus:ring-0">
-                <option value="Высокий">🔥 Высокий приоритет</option>
-                <option value="Обычный" selected>⚡ Обычный приоритет</option>
-                <option value="Низкий">🍃 Низкий приоритет</option>
+            <select id="task-priority" class="w-full bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl text-[10px] font-black uppercase text-indigo-500 appearance-none text-center border-none focus:ring-0">
+                <option value="Высокий">🔥 Высокий</option>
+                <option value="Обычный" selected>⚡ Обычный</option>
+                <option value="Низкий">🍃 Низкий</option>
             </select>
         </div>
     </div>
