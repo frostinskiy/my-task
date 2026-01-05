@@ -10,13 +10,22 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, where, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
+        // Прямая конфигурация для стабильности
+        const firebaseConfig = {
+            apiKey: "AIzaSyDFPgvkN6yAxcJqbUak-bh5akmL5oiPSCs",
+            authDomain: "planner21-47147.firebaseapp.com",
+            projectId: "planner21-47147",
+            storageBucket: "planner21-47147.firebasestorage.app",
+            messagingSenderId: "678376272314",
+            appId: "1:678376272314:web:4519c23ede2462f6d7ad83"
+        };
+
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'planner21-prod';
+        const appId = 'planner21-prod';
 
         const tg = window.Telegram.WebApp;
         tg.expand();
@@ -31,10 +40,10 @@
 
         let user = {
             first_name: getInitialName(),
-            id: tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : 'guest_' + Math.random().toString(36).substr(2, 9)
+            id: tg.initDataUnsafe.user ? String(tg.initDataUnsafe.user.id) : 'guest_' + Math.random().toString(36).substr(2, 9)
         };
 
-        let currentRoomId = String(user.id);
+        let currentRoomId = user.id;
         let tasks = [];
         let unsubscribers = [];
         let isAdmin = false;
@@ -49,14 +58,6 @@
             { id: 'other', icon: '🌊', label: 'Вайб' }
         ];
 
-        async function initAuth() {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-                await signInAnonymously(auth);
-            }
-        }
-
         async function init() {
             document.getElementById('task-date').valueAsDate = new Date();
             document.getElementById('display-name').innerText = user.first_name;
@@ -64,10 +65,12 @@
             renderCategories();
             updateRoomUI();
 
-            await initAuth();
+            // Анонимный вход
+            signInAnonymously(auth).catch(err => console.error("Auth error:", err));
 
             onAuthStateChanged(auth, (u) => {
                 if (u) {
+                    console.log("Logged in as:", u.uid);
                     startListening();
                 }
             });
@@ -85,12 +88,11 @@
             if (logoClickCount >= 5) {
                 logoClickCount = 0;
                 if (isAdmin) {
-                    const nr = prompt("ID комнаты:", currentRoomId);
-                    if (nr) { currentRoomId = nr; startListening(); updateRoomUI(); }
+                    const nr = prompt("Введите ID комнаты:");
+                    if (nr) { currentRoomId = nr; isAdmin = false; startListening(); updateRoomUI(); }
                     return;
                 }
                 const pass = prompt("Код доступа:");
-                // Установлен новый пароль 8055
                 if (pass === "8055") {
                     isAdmin = true;
                     document.getElementById('admin-badge').classList.remove('hidden');
@@ -108,7 +110,7 @@
         }
 
         function startListening() {
-            if (!auth.currentUser || isAdmin) return;
+            if (isAdmin) return;
             clearListeners();
             const collectionPath = collection(db, 'artifacts', appId, 'public', 'data', `tasks_${currentRoomId}`);
             const unsub = onSnapshot(collectionPath, (snap) => {
@@ -119,22 +121,17 @@
         }
 
         function startAdminGlobalListening() {
-            if (!auth.currentUser) return;
             clearListeners();
-            
             const globalPath = collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks_registry');
             const unsub = onSnapshot(globalPath, (snap) => {
                 tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 render();
-            }, (err) => {
-                console.error("Admin Registry Error:", err);
-            });
+            }, (err) => console.error("Admin Error:", err));
             unsubscribers.push(unsub);
             document.getElementById('room-id-display').innerText = "ОБЗОР ВСЕХ";
         }
 
         window.addTask = async () => {
-            if (!auth.currentUser) return;
             const input = document.getElementById('task-input');
             const time = document.getElementById('task-time').value;
             const date = document.getElementById('task-date').value;
@@ -154,7 +151,9 @@
             };
 
             try {
+                // Добавляем в текущую комнату
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', `tasks_${currentRoomId}`), payload);
+                // Добавляем в реестр для админа
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks_registry'), payload);
                 
                 input.value = '';
@@ -165,12 +164,10 @@
         };
 
         window.toggleTask = async (id, currentStatus, taskRoomId) => {
-            if (!auth.currentUser) return;
             const target = taskRoomId || currentRoomId;
             try {
                 const refLocal = doc(db, 'artifacts', appId, 'public', 'data', `tasks_${target}`, id);
                 await updateDoc(refLocal, { done: !currentStatus });
-                
                 if (!currentStatus) confetti({ particleCount: 30, origin: { y: 0.8 } });
             } catch (e) {
                 console.error("Toggle Error:", e);
@@ -178,9 +175,8 @@
         };
 
         window.deleteTask = async (id, taskRoomId) => {
-            if (!auth.currentUser) return;
             const target = taskRoomId || currentRoomId;
-            tg.showConfirm("Удалить?", async (ok) => {
+            tg.showConfirm("Удалить задачу?", async (ok) => {
                 if (ok) {
                     await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', `tasks_${target}`, id));
                 }
@@ -189,7 +185,7 @@
 
         function updateRoomUI() {
             if (isAdmin) return;
-            const isPrivate = currentRoomId === String(user.id);
+            const isPrivate = currentRoomId === user.id;
             document.getElementById('room-id-display').innerText = isPrivate ? 'Личное' : `ID: ${currentRoomId}`;
         }
 
@@ -219,7 +215,7 @@
             document.getElementById('progress-text').innerText = `${doneCount} / ${tasks.length}`;
 
             if (tasks.length === 0) {
-                container.innerHTML = `<div class="text-center py-10 text-slate-400 text-xs font-bold uppercase tracking-widest">Список пуст</div>`;
+                container.innerHTML = `<div class="text-center py-10 text-slate-400 text-[10px] font-black uppercase tracking-widest">Список задач пуст</div>`;
                 return;
             }
 
@@ -237,11 +233,10 @@
                             <p class="text-sm font-bold ${t.done ? 'line-through text-slate-400' : 'text-slate-800 dark:text-slate-100'}">${t.text}</p>
                         </div>
                         <div class="flex flex-wrap items-center gap-2 mt-1.5">
-                            <span class="text-[8px] font-bold text-slate-400 px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded">${t.date}</span>
+                            <span class="text-[8px] font-bold text-slate-400 px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded">${t.date} ${t.time || ''}</span>
                             <span class="text-[8px] font-black ${t.priority === 'Высокий' ? 'text-rose-500' : 'text-indigo-400'} uppercase">${t.priority}</span>
                             ${isAdmin ? `
-                                <span class="text-[9px] font-black text-white px-2 py-0.5 rounded-full bg-indigo-500 uppercase">👤 ${t.author || 'Гость'}</span>
-                                <span class="text-[9px] font-bold ${t.done ? 'text-emerald-500' : 'text-rose-500'} uppercase">${t.done ? '✓ Готово' : '○ В работе'}</span>
+                                <span class="text-[9px] font-black text-white px-2 py-0.5 rounded-full bg-indigo-500 uppercase">👤 ${t.author || 'Аноним'}</span>
                             ` : ''}
                         </div>
                     </div>
