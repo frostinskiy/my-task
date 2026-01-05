@@ -8,10 +8,9 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        // Firebase configuration
         const firebaseConfig = {
             apiKey: "AIzaSyDFPgvkN6yAxcJqbUak-bh5akmL5oiPSCs",
             authDomain: "planner21-47147.firebaseapp.com",
@@ -23,7 +22,6 @@
         };
 
         const MY_ADMIN_ID = 492384348;
-        const TELEGRAM_TOKEN = '8475177436:AAGqptajS1HqA1Xw-ZINU7EGXIutoAy1igU';
         const appId = 'planner21-prod';
 
         const tg = window.Telegram.WebApp;
@@ -35,6 +33,7 @@
         let tasks = [];
         let isAdminMode = false;
         let unsubscribe = null;
+        let deletingTaskId = null;
 
         async function init() {
             const userNameEl = document.getElementById('user-name');
@@ -43,7 +42,6 @@
                 db = getFirestore(app);
                 auth = getAuth(app);
 
-                // Listen for authentication state
                 onAuthStateChanged(auth, async (fbUser) => {
                     if (fbUser) {
                         userNameEl.innerText = user.first_name;
@@ -51,15 +49,11 @@
                         startListening();
                         checkAdminStatus();
                     } else {
-                        // Attempt to sign in if not authenticated
-                        await signInAnonymously(auth).catch(e => {
-                            userNameEl.innerText = "ОШИБКА AUTH";
-                            console.error(e);
-                        });
+                        await signInAnonymously(auth);
                     }
                 });
             } catch (err) {
-                userNameEl.innerText = "ОШИБКА ИНИЦИАЛИЗАЦИИ";
+                userNameEl.innerText = "ОШИБКА СЕТИ";
             }
         }
 
@@ -84,24 +78,13 @@
 
         function startListening() {
             if (unsubscribe) unsubscribe();
-
-            // Resolve collection path based on mode
             const collectionPath = isAdminMode 
                 ? collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks')
                 : collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
 
-            // Listen to data in real-time
             unsubscribe = onSnapshot(collectionPath, (snap) => {
                 tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 render(tasks);
-            }, (error) => {
-                console.error("Listener error:", error);
-                if (error.code === 'permission-denied') {
-                    tg.showPopup({ 
-                        title: "Доступ закрыт", 
-                        message: "Firebase всё еще блокирует доступ. Проверь вкладку Rules и нажми Publish!" 
-                    });
-                }
             });
         }
 
@@ -125,16 +108,12 @@
             };
 
             try {
-                // Save to private user storage
                 await addDoc(collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks'), payload);
-                // Also save to global admin collection
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks'), payload);
-                
                 input.value = '';
                 tg.HapticFeedback.impactOccurred('light');
             } catch (e) {
-                console.error("Add error:", e);
-                tg.showPopup({ title: "Ошибка", message: "Не удалось сохранить задачу в базу." });
+                tg.showPopup({ title: "Ошибка", message: "Не удалось сохранить" });
             }
         };
 
@@ -147,13 +126,57 @@
             } catch (e) { console.error(e); }
         };
 
-        window.deleteTask = async (id) => {
-            if (isAdminMode) return;
+        // Логика удаления через модалку
+        window.confirmDelete = (id) => {
+            deletingTaskId = id;
+            document.getElementById('confirm-modal').classList.remove('hidden');
+            document.getElementById('confirm-modal').classList.add('flex');
+            tg.HapticFeedback.impactOccurred('medium');
+        };
+
+        window.closeModal = () => {
+            deletingTaskId = null;
+            document.getElementById('confirm-modal').classList.add('hidden');
+            document.getElementById('confirm-modal').classList.remove('flex');
+        };
+
+        window.executeDelete = async () => {
+            if (!deletingTaskId) return;
             try {
-                const ref = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', id);
+                const ref = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', deletingTaskId);
                 await deleteDoc(ref);
-                tg.HapticFeedback.impactOccurred('light');
+                tg.HapticFeedback.notificationOccurred('success');
+                closeModal();
             } catch (e) { console.error(e); }
+        };
+
+        // Обработка свайпа
+        let touchStartX = 0;
+        window.handleTouchStart = (e) => {
+            touchStartX = e.touches[0].clientX;
+        };
+
+        window.handleTouchMove = (e, id) => {
+            const touchX = e.touches[0].clientX;
+            const diff = touchStartX - touchX;
+            const item = e.currentTarget;
+            if (diff > 50 && diff < 150) {
+                item.style.transform = `translateX(-${diff}px)`;
+            }
+        };
+
+        window.handleTouchEnd = (e, id) => {
+            const touchEndX = e.changedTouches[0].clientX;
+            const diff = touchStartX - touchEndX;
+            const item = e.currentTarget;
+            
+            if (diff > 100) {
+                item.style.transform = `translateX(-100%)`;
+                item.style.opacity = '0';
+                setTimeout(() => confirmDelete(id), 200);
+            } else {
+                item.style.transform = `translateX(0)`;
+            }
         };
 
         function render(listData) {
@@ -168,50 +191,68 @@
             document.getElementById('progress-text').innerText = `${doneCount} / ${total}`;
 
             if (total === 0) {
-                container.innerHTML = '<div class="text-center py-10 opacity-20 font-bold uppercase text-[10px] tracking-widest">Список пуст</div>';
+                container.innerHTML = '<div class="text-center py-10 opacity-20 font-bold uppercase text-[10px] tracking-widest italic">Пусто</div>';
                 return;
             }
 
-            // Sort by creation date descending locally
             listData.sort((a,b) => b.createdAt - a.createdAt).forEach(t => {
-                const el = document.createElement('div');
-                el.className = 'bg-white rounded-2xl p-4 flex items-center gap-4 mb-3 shadow-sm border border-slate-50 transition-all active:scale-[0.98]';
-                el.innerHTML = `
-                    <div onclick="toggleTask('${t.id}', ${t.done})" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${t.done ? 'bg-indigo-600 border-indigo-600' : 'border-slate-200'}">
-                        ${t.done ? '<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>' : ''}
-                    </div>
-                    <div class="flex-grow overflow-hidden" onclick="toggleTask('${t.id}', ${t.done})">
-                        <p class="text-sm font-bold truncate ${t.done ? 'line-through text-slate-300' : 'text-slate-800'}">${t.text}</p>
-                        <div class="flex gap-2 mt-1 items-center">
-                            <span class="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">${isAdminMode ? t.userName : t.priority}</span>
-                            ${t.time ? `<span class="text-[9px] text-indigo-500 font-bold flex items-center gap-1">🕒 ${t.time}</span>` : ''}
+                const wrapper = document.createElement('div');
+                wrapper.className = 'relative overflow-hidden mb-3 rounded-2xl bg-red-500';
+                
+                // Красная подложка для свайпа
+                wrapper.innerHTML = `
+                    <div class="absolute inset-0 flex items-center justify-end pr-6 text-white font-black text-[10px] uppercase">Удалить</div>
+                    <div ontouchstart="handleTouchStart(event)" 
+                         ontouchmove="handleTouchMove(event, '${t.id}')" 
+                         ontouchend="handleTouchEnd(event, '${t.id}')"
+                         class="bg-white p-4 flex items-center gap-4 relative shadow-sm border border-slate-50 transition-transform duration-200">
+                        <div onclick="toggleTask('${t.id}', ${t.done})" class="w-6 h-6 rounded-lg border-2 flex items-center justify-center transition-colors ${t.done ? 'bg-indigo-600 border-indigo-600' : 'border-slate-200'}">
+                            ${t.done ? '<svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>' : ''}
+                        </div>
+                        <div class="flex-grow overflow-hidden" onclick="toggleTask('${t.id}', ${t.done})">
+                            <p class="text-sm font-bold truncate ${t.done ? 'line-through text-slate-300' : 'text-slate-800'}">${t.text}</p>
+                            <div class="flex gap-2 mt-1 items-center">
+                                <span class="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">${isAdminMode ? t.userName : t.priority}</span>
+                                ${t.time ? `<span class="text-[9px] text-indigo-500 font-bold flex items-center gap-1">🕒 ${t.time}</span>` : ''}
+                            </div>
                         </div>
                     </div>
-                    ${!isAdminMode ? `
-                        <button onclick="deleteTask('${t.id}')" class="text-slate-200 hover:text-red-500 transition-colors">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                        </button>
-                    ` : ''}
                 `;
-                container.appendChild(el);
+                container.appendChild(wrapper);
             });
         }
         init();
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700;800&display=swap');
-        body { background: #fcfdfe; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { background: #fcfdfe; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
         ::-webkit-scrollbar { display: none; }
+        .modal-blur { backdrop-filter: blur(8px); background: rgba(255,255,255,0.7); }
     </style>
 </head>
 <body class="p-5 pb-24 select-none">
+    <!-- Модальное окно удаления -->
+    <div id="confirm-modal" class="hidden fixed inset-0 z-[100] modal-blur items-center justify-center p-8">
+        <div class="bg-white w-full rounded-[2.5rem] p-8 shadow-2xl border border-slate-100 text-center">
+            <div class="w-16 h-16 bg-red-50 rounded-2xl flex items-center justify-center text-red-500 mx-auto mb-6">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+            </div>
+            <h3 class="text-lg font-black text-slate-900 mb-2 leading-tight text-balance">Удалить задачу?</h3>
+            <p class="text-sm text-slate-400 font-bold mb-8">Это действие нельзя будет отменить.</p>
+            <div class="flex flex-col gap-3">
+                <button onclick="executeDelete()" class="w-full bg-red-500 text-white py-4 rounded-2xl font-black text-sm active:scale-95 transition-all shadow-lg shadow-red-100 uppercase tracking-widest">Удалить</button>
+                <button onclick="closeModal()" class="w-full bg-slate-100 text-slate-500 py-4 rounded-2xl font-black text-sm active:scale-95 transition-all uppercase tracking-widest">Отмена</button>
+            </div>
+        </div>
+    </div>
+
     <header class="flex items-center justify-between mb-8">
         <div class="flex items-center gap-3">
             <div class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg rotate-2">
                 <span class="text-xs font-black italic">P21</span>
             </div>
             <div>
-                <h1 class="text-xl font-extrabold text-slate-900 tracking-tight leading-none">PLANNER 21</h1>
+                <h1 class="text-xl font-extrabold text-slate-900 tracking-tight leading-none text-balance">PLANNER 21</h1>
                 <p id="user-name" class="text-[10px] font-bold uppercase tracking-widest mt-1 text-indigo-500 italic">Синхронизация...</p>
             </div>
         </div>
@@ -220,7 +261,7 @@
 
     <div class="bg-white rounded-[2.5rem] p-6 mb-8 border border-slate-50 shadow-sm">
         <div class="flex justify-between items-end mb-4">
-            <span class="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Прогресс дня</span>
+            <span class="text-[10px] font-extrabold text-slate-400 uppercase tracking-widest">Прогресс</span>
             <span id="progress-text" class="text-sm font-black text-slate-900">0 / 0</span>
         </div>
         <div class="w-full h-3 bg-slate-100 rounded-full overflow-hidden">
@@ -230,14 +271,14 @@
 
     <div class="bg-white p-4 rounded-[2.5rem] border border-slate-50 shadow-sm mb-8">
         <div class="flex items-center gap-2 mb-4">
-            <input type="text" id="task-input" placeholder="Запиши задачу..." class="bg-slate-50 flex-grow px-6 py-4 rounded-2xl outline-none font-bold text-sm text-slate-700 placeholder:text-slate-300">
+            <input type="text" id="task-input" placeholder="Новая задача..." class="bg-slate-50 flex-grow px-6 py-4 rounded-2xl outline-none font-bold text-sm text-slate-700 placeholder:text-slate-300">
             <button id="add-btn" onclick="addTask()" class="bg-indigo-600 text-white p-4 rounded-2xl active:scale-90 shadow-md shadow-indigo-100 transition-all">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"></path></svg>
             </button>
         </div>
         <div class="flex gap-3">
-            <input type="time" id="task-time" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600 cursor-pointer">
-            <select id="task-priority" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600 cursor-pointer">
+            <input type="time" id="task-time" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600">
+            <select id="task-priority" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600">
                 <option value="Высокий">🚀 Срочно</option>
                 <option value="Обычный" selected>⚡️ Обычный</option>
                 <option value="Низкий">☁️ Низкий</option>
