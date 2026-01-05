@@ -11,6 +11,7 @@
         import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
+        // Firebase configuration
         const firebaseConfig = {
             apiKey: "AIzaSyDFPgvkN6yAxcJqbUak-bh5akmL5oiPSCs",
             authDomain: "planner21-47147.firebaseapp.com",
@@ -30,11 +31,10 @@
         tg.ready();
 
         let db, auth;
-        let user = tg.initDataUnsafe.user || { first_name: "Пользователь", id: 492384348 };
+        let user = tg.initDataUnsafe.user || { first_name: "Admin", id: 492384348 };
         let tasks = [];
         let isAdminMode = false;
-        let lastNotified = {}; 
-        let unsubscribe = null; // Для отписки от предыдущих слушателей
+        let unsubscribe = null;
 
         async function init() {
             const userNameEl = document.getElementById('user-name');
@@ -43,20 +43,23 @@
                 db = getFirestore(app);
                 auth = getAuth(app);
 
+                // Listen for authentication state
                 onAuthStateChanged(auth, async (fbUser) => {
                     if (fbUser) {
                         userNameEl.innerText = user.first_name;
-                        userNameEl.classList.remove('text-indigo-500');
-                        userNameEl.classList.add('text-green-600');
+                        userNameEl.className = "text-[10px] font-bold uppercase tracking-widest mt-1 text-green-500";
                         startListening();
                         checkAdminStatus();
-                        startReminderEngine();
                     } else {
-                        await signInAnonymously(auth);
+                        // Attempt to sign in if not authenticated
+                        await signInAnonymously(auth).catch(e => {
+                            userNameEl.innerText = "ОШИБКА AUTH";
+                            console.error(e);
+                        });
                     }
                 });
             } catch (err) {
-                userNameEl.innerText = "ОШИБКА БАЗЫ";
+                userNameEl.innerText = "ОШИБКА ИНИЦИАЛИЗАЦИИ";
             }
         }
 
@@ -75,67 +78,31 @@
             badge.innerText = isAdminMode ? "ADMIN VIEW" : "MY TASKS";
             badge.classList.toggle('bg-red-500', isAdminMode);
             badge.classList.toggle('text-white', isAdminMode);
-            startListening(); // Переподключаемся к нужной коллекции
+            startListening();
             tg.HapticFeedback.impactOccurred('medium');
         }
 
         function startListening() {
-            if (unsubscribe) unsubscribe(); // Отписываемся от старой коллекции
+            if (unsubscribe) unsubscribe();
 
-            const path = isAdminMode 
+            // Resolve collection path based on mode
+            const collectionPath = isAdminMode 
                 ? collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks')
                 : collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks');
 
-            // Используем простой запрос без сложных фильтров для стабильности
-            unsubscribe = onSnapshot(path, (snap) => {
+            // Listen to data in real-time
+            unsubscribe = onSnapshot(collectionPath, (snap) => {
                 tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                 render(tasks);
-            }, (err) => {
-                console.error("Firestore Error:", err);
+            }, (error) => {
+                console.error("Listener error:", error);
+                if (error.code === 'permission-denied') {
+                    tg.showPopup({ 
+                        title: "Доступ закрыт", 
+                        message: "Firebase всё еще блокирует доступ. Проверь вкладку Rules и нажми Publish!" 
+                    });
+                }
             });
-        }
-
-        function startReminderEngine() {
-            setInterval(() => {
-                const now = new Date();
-                const currentTime = now.getHours() * 60 + now.getMinutes();
-                const nowMs = Date.now();
-                
-                tasks.forEach(task => {
-                    if (!task.done && task.time) {
-                        const [h, m] = task.time.split(':').map(Number);
-                        const taskTimeMinutes = h * 60 + m;
-
-                        const isExactTime = taskTimeMinutes === currentTime;
-                        const isOverdue = currentTime > taskTimeMinutes;
-
-                        const lastTime = lastNotified[task.id] || 0;
-                        const timeSinceLastNotify = (nowMs - lastTime) / (1000 * 60);
-
-                        if (isExactTime && lastTime === 0) {
-                            sendTelegramNotification(task, "Пришло время выполнить задачу!");
-                        } else if (isOverdue && timeSinceLastNotify >= 30) {
-                            sendTelegramNotification(task, "Задача все еще не выполнена. Не забудьте про нее!");
-                        }
-                    }
-                });
-            }, 30000); 
-        }
-
-        async function sendTelegramNotification(task, message) {
-            lastNotified[task.id] = Date.now();
-            const text = `🔔 *Напоминание:* \n\n"${task.text}"\n\n_${message}_ \n🕒 Время: ${task.time}`;
-            try {
-                await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        chat_id: user.id,
-                        text: text,
-                        parse_mode: 'Markdown'
-                    })
-                });
-            } catch (e) { console.error("Notification failed", e); }
         }
 
         window.addTask = async () => {
@@ -158,30 +125,35 @@
             };
 
             try {
-                // Сохраняем в личную коллекцию
+                // Save to private user storage
                 await addDoc(collection(db, 'artifacts', appId, 'users', String(user.id), 'tasks'), payload);
-                // Сохраняем в общую коллекцию (для админа)
+                // Also save to global admin collection
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks'), payload);
                 
                 input.value = '';
                 tg.HapticFeedback.impactOccurred('light');
             } catch (e) {
-                tg.showPopup({ title: "Ошибка", message: "Не удалось сохранить." });
+                console.error("Add error:", e);
+                tg.showPopup({ title: "Ошибка", message: "Не удалось сохранить задачу в базу." });
             }
         };
 
-        window.toggleTask = async (id, status) => {
+        window.toggleTask = async (id, currentStatus) => {
             if (isAdminMode) return;
-            const ref = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', id);
-            await updateDoc(ref, { done: !status });
-            tg.HapticFeedback.selectionChanged();
+            try {
+                const ref = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', id);
+                await updateDoc(ref, { done: !currentStatus });
+                tg.HapticFeedback.selectionChanged();
+            } catch (e) { console.error(e); }
         };
 
         window.deleteTask = async (id) => {
             if (isAdminMode) return;
-            const ref = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', id);
-            await deleteDoc(ref);
-            tg.HapticFeedback.impactOccurred('light');
+            try {
+                const ref = doc(db, 'artifacts', appId, 'users', String(user.id), 'tasks', id);
+                await deleteDoc(ref);
+                tg.HapticFeedback.impactOccurred('light');
+            } catch (e) { console.error(e); }
         };
 
         function render(listData) {
@@ -200,7 +172,7 @@
                 return;
             }
 
-            // Сортируем локально по дате создания
+            // Sort by creation date descending locally
             listData.sort((a,b) => b.createdAt - a.createdAt).forEach(t => {
                 const el = document.createElement('div');
                 el.className = 'bg-white rounded-2xl p-4 flex items-center gap-4 mb-3 shadow-sm border border-slate-50 transition-all active:scale-[0.98]';
@@ -216,7 +188,7 @@
                         </div>
                     </div>
                     ${!isAdminMode ? `
-                        <button onclick="deleteTask('${t.id}')" class="text-slate-200 hover:text-red-500">
+                        <button onclick="deleteTask('${t.id}')" class="text-slate-200 hover:text-red-500 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
                     ` : ''}
@@ -240,10 +212,10 @@
             </div>
             <div>
                 <h1 class="text-xl font-extrabold text-slate-900 tracking-tight leading-none">PLANNER 21</h1>
-                <p id="user-name" class="text-[10px] font-bold uppercase tracking-widest mt-1 text-indigo-500">Загрузка...</p>
+                <p id="user-name" class="text-[10px] font-bold uppercase tracking-widest mt-1 text-indigo-500 italic">Синхронизация...</p>
             </div>
         </div>
-        <button id="admin-badge" class="hidden px-4 py-2 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase transition-all"></button>
+        <button id="admin-badge" class="hidden px-4 py-2 bg-white shadow-sm border border-slate-100 text-slate-900 rounded-full text-[10px] font-black uppercase transition-all active:scale-90"></button>
     </header>
 
     <div class="bg-white rounded-[2.5rem] p-6 mb-8 border border-slate-50 shadow-sm">
@@ -258,14 +230,14 @@
 
     <div class="bg-white p-4 rounded-[2.5rem] border border-slate-50 shadow-sm mb-8">
         <div class="flex items-center gap-2 mb-4">
-            <input type="text" id="task-input" placeholder="Что планируешь?" class="bg-slate-50 flex-grow px-6 py-4 rounded-2xl outline-none font-bold text-sm text-slate-700">
-            <button id="add-btn" onclick="addTask()" class="bg-indigo-600 text-white p-4 rounded-2xl active:scale-90 transition-all">
+            <input type="text" id="task-input" placeholder="Запиши задачу..." class="bg-slate-50 flex-grow px-6 py-4 rounded-2xl outline-none font-bold text-sm text-slate-700 placeholder:text-slate-300">
+            <button id="add-btn" onclick="addTask()" class="bg-indigo-600 text-white p-4 rounded-2xl active:scale-90 shadow-md shadow-indigo-100 transition-all">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M12 4v16m8-8H4"></path></svg>
             </button>
         </div>
         <div class="flex gap-3">
-            <input type="time" id="task-time" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600">
-            <select id="task-priority" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600">
+            <input type="time" id="task-time" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600 cursor-pointer">
+            <select id="task-priority" class="flex-1 bg-slate-50 px-4 py-3 rounded-2xl text-xs font-bold outline-none text-slate-600 cursor-pointer">
                 <option value="Высокий">🚀 Срочно</option>
                 <option value="Обычный" selected>⚡️ Обычный</option>
                 <option value="Низкий">☁️ Низкий</option>
