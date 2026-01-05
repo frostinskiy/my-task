@@ -12,7 +12,6 @@
         import { getFirestore, collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, where, limit } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        // Прямая конфигурация для стабильности
         const firebaseConfig = {
             apiKey: "AIzaSyDFPgvkN6yAxcJqbUak-bh5akmL5oiPSCs",
             authDomain: "planner21-47147.firebaseapp.com",
@@ -29,6 +28,15 @@
 
         const tg = window.Telegram.WebApp;
         tg.expand();
+
+        const quotes = [
+            "Дисциплина — это выбор между тем, что вы хотите сейчас, и тем, что вы хотите больше всего.",
+            "Твоё будущее создается тем, что ты делаешь сегодня, а не тем, что ты будешь делать завтра.",
+            "Простота — это предельная степень искушенности.",
+            "Фокус — это умение сказать «нет» сотне хороших идей ради одной великой.",
+            "Время — единственный ресурс, который нельзя восстановить. Трать его осознанно.",
+            "Маленькие шаги каждый день приводят к большим изменениям в долгосрочной перспективе."
+        ];
 
         const getInitialName = () => {
             if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
@@ -61,16 +69,15 @@
         async function init() {
             document.getElementById('task-date').valueAsDate = new Date();
             document.getElementById('display-name').innerText = user.first_name;
+            document.getElementById('daily-quote').innerText = quotes[Math.floor(Math.random() * quotes.length)];
             
             renderCategories();
             updateRoomUI();
 
-            // Анонимный вход
             signInAnonymously(auth).catch(err => console.error("Auth error:", err));
 
             onAuthStateChanged(auth, (u) => {
                 if (u) {
-                    console.log("Logged in as:", u.uid);
                     startListening();
                 }
             });
@@ -151,9 +158,7 @@
             };
 
             try {
-                // Добавляем в текущую комнату
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', `tasks_${currentRoomId}`), payload);
-                // Добавляем в реестр для админа
                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'all_tasks_registry'), payload);
                 
                 input.value = '';
@@ -215,32 +220,39 @@
             document.getElementById('progress-text').innerText = `${doneCount} / ${tasks.length}`;
 
             if (tasks.length === 0) {
-                container.innerHTML = `<div class="text-center py-10 text-slate-400 text-[10px] font-black uppercase tracking-widest">Список задач пуст</div>`;
+                container.innerHTML = `
+                    <div class="flex flex-col items-center justify-center py-16 text-center">
+                        <div class="w-16 h-16 bg-slate-50 dark:bg-slate-900 rounded-full flex items-center justify-center mb-4 border border-slate-100 dark:border-slate-800">
+                             <svg class="w-8 h-8 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                        </div>
+                        <p class="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Планов пока нет</p>
+                        <p class="text-[9px] text-slate-300 mt-1">Время создавать свою реальность</p>
+                    </div>`;
                 return;
             }
 
             tasks.sort((a,b) => b.createdAt - a.createdAt).forEach(t => {
                 const cat = categories.find(c => c.id === t.category) || categories[4];
                 const el = document.createElement('div');
-                el.className = `p-5 rounded-[1.5rem] flex items-center gap-4 border shadow-sm mb-3 transition-all ${t.done ? 'bg-slate-50/50 dark:bg-slate-900/40 border-slate-100 dark:border-slate-800' : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800'}`;
+                el.className = `p-5 rounded-[1.5rem] flex items-center gap-4 border shadow-sm mb-3 transition-all ${t.done ? 'bg-slate-50/50 dark:bg-slate-900/40 border-slate-100 dark:border-slate-800 opacity-70' : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800'}`;
                 el.innerHTML = `
-                    <div onclick="toggleTask('${t.id}', ${t.done}, '${t.roomId}')" class="w-6 h-6 rounded-lg border-2 flex-shrink-0 flex items-center justify-center ${t.done ? 'bg-emerald-500 border-emerald-500' : 'border-slate-200 dark:border-slate-700'}">
+                    <div onclick="toggleTask('${t.id}', ${t.done}, '${t.roomId}')" class="w-6 h-6 rounded-lg border-2 flex-shrink-0 flex items-center justify-center cursor-pointer transition-all ${t.done ? 'bg-indigo-500 border-indigo-500' : 'border-slate-200 dark:border-slate-700'}">
                         ${t.done ? '<svg class="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="4" d="M5 13l4 4L19 7"></path></svg>' : ''}
                     </div>
-                    <div class="flex-grow overflow-hidden">
+                    <div class="flex-grow overflow-hidden text-left">
                         <div class="flex items-center gap-2">
                             <span class="text-lg">${cat.icon}</span>
                             <p class="text-sm font-bold ${t.done ? 'line-through text-slate-400' : 'text-slate-800 dark:text-slate-100'}">${t.text}</p>
                         </div>
                         <div class="flex flex-wrap items-center gap-2 mt-1.5">
-                            <span class="text-[8px] font-bold text-slate-400 px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded">${t.date} ${t.time || ''}</span>
-                            <span class="text-[8px] font-black ${t.priority === 'Высокий' ? 'text-rose-500' : 'text-indigo-400'} uppercase">${t.priority}</span>
+                            <span class="text-[8px] font-bold text-slate-400 px-2 py-0.5 bg-slate-50 dark:bg-slate-800/60 rounded-full">${t.date} ${t.time || ''}</span>
+                            <span class="text-[8px] font-black ${t.priority === 'Высокий' ? 'text-rose-500' : 'text-indigo-400'} uppercase tracking-tight">${t.priority}</span>
                             ${isAdmin ? `
                                 <span class="text-[9px] font-black text-white px-2 py-0.5 rounded-full bg-indigo-500 uppercase">👤 ${t.author || 'Аноним'}</span>
                             ` : ''}
                         </div>
                     </div>
-                    <button onclick="deleteTask('${t.id}', '${t.roomId}')" class="text-slate-300 hover:text-rose-500 transition-colors">
+                    <button onclick="deleteTask('${t.id}', '${t.roomId}')" class="text-slate-300 hover:text-rose-500 transition-colors p-2">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
                     </button>
                 `;
@@ -250,21 +262,41 @@
         init();
     </script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;800&display=swap');
-        body { background: #fafbfc; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap');
+        body { background: #fafbfc; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; overflow-x: hidden; letter-spacing: -0.01em; }
         @media (prefers-color-scheme: dark) { body { background: #030712; color: white; } }
         input[type="text"] { width: 100%; background: transparent; border: none; outline: none; padding: 1.25rem; font-weight: 700; font-size: 16px; }
         input[type="date"], input[type="time"] { background: transparent; border: none; outline: none; font-size: 12px; font-weight: 800; color: inherit; width: 100%; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
+        .quote-box {
+            background: linear-gradient(135deg, rgba(79, 70, 229, 0.05) 0%, rgba(147, 51, 234, 0.05) 100%);
+            border: 1px solid rgba(79, 70, 229, 0.1);
+        }
+        @media (prefers-color-scheme: dark) {
+            .quote-box {
+                background: linear-gradient(135deg, rgba(79, 70, 229, 0.1) 0%, rgba(147, 51, 234, 0.1) 100%);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+            }
+        }
+        .glass-progress {
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(79, 70, 229, 0.1);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.03);
+        }
+        @media (prefers-color-scheme: dark) {
+            .glass-progress { background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.03); }
+        }
     </style>
 </head>
-<body class="p-6 pb-24">
-    <header class="flex items-center justify-between mb-8">
+<body class="p-6">
+    <!-- Шапка -->
+    <header class="flex items-center justify-between mb-6">
         <div class="flex items-center gap-4">
-            <div onclick="handleLogoClick()" class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg rotate-3 active:scale-95 transition-transform cursor-pointer">
+            <div onclick="handleLogoClick()" class="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-indigo-100 dark:shadow-none rotate-3 active:scale-95 transition-transform cursor-pointer">
                 <span class="text-[10px] font-black italic">P21</span>
             </div>
-            <div>
+            <div class="text-left">
                 <h1 id="display-name" class="text-lg font-extrabold tracking-tight mb-0.5 truncate max-w-[150px]">...</h1>
                 <div class="flex items-center gap-2">
                     <span id="room-id-display" class="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 uppercase tracking-tighter">Личное</span>
@@ -277,39 +309,48 @@
         </div>
     </header>
 
-    <div class="bg-white dark:bg-slate-900 rounded-[1.5rem] p-4 mb-8 border border-slate-100 dark:border-slate-800 shadow-sm">
-        <div class="h-1.5 bg-slate-50 dark:bg-slate-800 rounded-full overflow-hidden">
-            <div id="progress-bar" class="h-full bg-indigo-500 rounded-full transition-all duration-700" style="width: 0%"></div>
+    <!-- Блок цитаты -->
+    <div class="quote-box p-6 rounded-[2rem] mb-4 relative overflow-hidden">
+        <div class="absolute top-[-10px] left-[-10px] opacity-10">
+            <svg class="w-20 h-20 text-indigo-600" fill="currentColor" viewBox="0 0 24 24"><path d="M14.017 21v-7.391c0-5.704 3.731-9.57 8.983-10.609l.995 2.151c-2.432.917-3.995 3.638-3.995 5.849h4v10h-9.983zm-14.017 0v-7.391c0-5.704 3.748-9.57 9-10.609l.996 2.151c-2.437.917-3.996 3.638-3.996 5.849h3.983v10h-9.983z"/></svg>
+        </div>
+        <p id="daily-quote" class="text-center text-[11px] leading-relaxed font-bold text-slate-600 dark:text-slate-300 italic relative z-10">...</p>
+    </div>
+
+    <!-- Индикатор выполнения под цитатой -->
+    <div class="glass-progress rounded-[1.5rem] p-4 mb-6">
+        <div class="h-2 bg-slate-100/50 dark:bg-slate-800/80 rounded-full overflow-hidden relative">
+            <div id="progress-bar" class="h-full bg-gradient-to-r from-indigo-500 via-indigo-400 to-indigo-500 rounded-full transition-all duration-1000 ease-out shadow-[0_0_15px_rgba(79,70,229,0.5)]" style="width: 0%"></div>
         </div>
     </div>
 
-    <div class="bg-white dark:bg-slate-900 rounded-[2rem] mb-10 border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
-        <div class="flex items-center">
-            <input type="text" id="task-input" placeholder="Новая цель..." class="dark:text-white">
-            <button onclick="addTask()" class="mr-4 bg-indigo-600 text-white p-3 rounded-full active:scale-90 transition-all shadow-md shadow-indigo-200 dark:shadow-none">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" stroke-width="3" stroke-linecap="round"></path></svg>
+    <!-- Создатель планов СВЕРХУ -->
+    <div class="bg-white dark:bg-slate-900 rounded-[2rem] mb-8 border border-slate-100 dark:border-slate-800 overflow-hidden shadow-sm">
+        <div class="flex items-center pr-4">
+            <input type="text" id="task-input" placeholder="О чем ты думаешь?" class="dark:text-white">
+            <button onclick="addTask()" class="bg-indigo-600 text-white p-3.5 rounded-full active:scale-90 transition-all shadow-lg shadow-indigo-200 dark:shadow-none">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12 4v16m8-8H4" stroke-width="3" stroke-linecap="round"></path></svg>
             </button>
         </div>
-        <div class="px-5 pb-5 pt-2">
-            <div id="category-select" class="flex gap-2 mb-6 overflow-x-auto no-scrollbar"></div>
+        <div class="px-5 pb-5 pt-0">
+            <div id="category-select" class="flex gap-2 mb-4 overflow-x-auto no-scrollbar"></div>
             <div class="grid grid-cols-2 gap-3 mb-4">
-                <div class="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl flex flex-col">
-                    <span class="text-[8px] uppercase font-black text-slate-400 mb-1">Когда</span>
+                <div class="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-2xl">
                     <input type="date" id="task-date" class="dark:text-white">
                 </div>
-                <div class="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl flex flex-col">
-                    <span class="text-[8px] uppercase font-black text-slate-400 mb-1">Во сколько</span>
+                <div class="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-2xl">
                     <input type="time" id="task-time" class="dark:text-white">
                 </div>
             </div>
-            <select id="task-priority" class="w-full bg-slate-50 dark:bg-slate-800/60 p-3 rounded-2xl text-[10px] font-black uppercase text-indigo-500 appearance-none text-center border-none focus:ring-0">
-                <option value="Высокий">🔥 Высокий</option>
+            <select id="task-priority" class="w-full bg-slate-50 dark:bg-slate-800/40 p-3 rounded-2xl text-[10px] font-black uppercase text-indigo-500 appearance-none text-center border-none focus:ring-0">
+                <option value="Высокий">🔥 Приоритет</option>
                 <option value="Обычный" selected>⚡ Обычный</option>
                 <option value="Низкий">🍃 Низкий</option>
             </select>
         </div>
     </div>
 
-    <div id="task-list"></div>
+    <!-- Список планов СНИЗУ -->
+    <div id="task-list" class="pb-10"></div>
 </body>
 </html>
